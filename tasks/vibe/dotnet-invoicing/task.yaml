@@ -1,0 +1,47 @@
+id: dotnet-invoicing
+description: "Brownfield C#/.NET: fix four correctness bugs in an invoice pricing engine (discount ordering, compound tax, negative clamp, per-line rounding)"
+timeout_minutes: 15
+functional_pass_threshold: 0.99
+prompt: |
+  A C#/.NET 8 invoice pricing engine (the `Invoicing` library under `src/`) is
+  producing wrong totals in production. Fix the implementation so it matches the
+  documented pricing contract. This is a brownfield task: keep the existing public
+  interface (`InvoiceEngine.Compute(InvoiceRequest)` returning `InvoiceResult`) and
+  the model types in `src/` — only correct the logic.
+
+  Reported defects:
+
+  1. Discounts are being applied AFTER tax. The order-level percentage discount
+     and the flat (fixed) discount must be applied to the subtotal BEFORE tax is
+     calculated, so tax is charged on the discounted base.
+
+  2. Compound taxes are not compounding. Taxes apply in list order; a tax marked
+     `Compound = true` must be levied on the discounted base PLUS the taxes already
+     applied before it, not just the base.
+
+  3. A flat discount larger than the subtotal produces a negative grand total. The
+     discounted base and the grand total must never go below zero, and
+     `DiscountTotal` must report the amount actually saved (never more than the
+     subtotal).
+
+  4. Rounding is applied to the summed subtotal instead of to each line. Each
+     line total (`UnitPrice * Quantity`) must be rounded to 2 decimal places
+     (away from zero) individually, then summed. All monetary values in the result
+     are rounded to 2 decimal places, away from zero.
+
+  The code is in `src/`. Make the engine correct for all four issues; an automated
+  test suite (which you cannot see or modify) will verify the behavior.
+
+# Declarative verification: run the authoritative xUnit suite in the prebuilt
+# .NET image and score from the .trx report. No verify.sh needed.
+verify:
+  image: kirobench-dotnet:8.0
+  parser: trx
+  workdir: ""
+  tests_subdir: verify/tests
+  setup:
+    - cp -r "$TESTS_RO" "$BUILD/tests"
+  test_cmd: >-
+    dotnet test "$BUILD/tests/Tests.csproj" -c Release --nologo
+    --logger "trx;LogFileName=r.trx" --results-directory "$RESULTS_DIR"
+  network: none

@@ -1,0 +1,76 @@
+id: terraform-serverless-spa
+description: "Write Terraform for a serverless single-page web app on AWS (S3-hosted SPA, Route 53 → API Gateway → Lambda → DynamoDB + S3); graded with terraform validate + structural checks"
+timeout_minutes: 20
+effort: high
+
+# Graduated structural + validate checks; treat >=80% passing as a pass.
+functional_pass_threshold: 0.8
+
+prompt: |
+  Write Terraform that provisions a serverless single-page web application (SPA)
+  on AWS, matching this architecture:
+
+      Internet → Route 53 → API Gateway → Lambda → DynamoDB
+                                            └─────→ S3
+
+  The SPA's static assets are hosted in S3. A custom domain in Route 53 routes
+  API traffic to API Gateway, which invokes a Lambda function that reads/writes a
+  DynamoDB table and an S3 bucket.
+
+  Create all Terraform files inside a directory named `src/` (you may split the
+  configuration across multiple .tf files). Provision at least:
+
+  Provider
+  - A required_providers block pinning the AWS provider (source "hashicorp/aws").
+    Use a flexible constraint such as version = "~> 5.0" (do NOT pin an exact
+    patch version). Use only the AWS provider.
+
+  S3 (SPA hosting)
+  - An S3 bucket for the SPA.
+  - Static website hosting configured with index document "index.html".
+
+  DynamoDB
+  - A DynamoDB table with a hash (partition) key.
+
+  Lambda
+  - A Lambda function (any runtime/handler) with an IAM execution role whose trust
+    policy allows lambda.amazonaws.com.
+  - The function's IAM policy must grant access to the DynamoDB table (dynamodb
+    actions) and the S3 bucket (s3 actions).
+  - Pass the DynamoDB table name and S3 bucket name to the function via
+    environment variables.
+
+  API Gateway
+  - An API Gateway API (HTTP API `aws_apigatewayv2_*` or REST API
+    `aws_api_gateway_*`) integrated with the Lambda function.
+  - An aws_lambda_permission allowing API Gateway to invoke the function.
+
+  Route 53
+  - A Route 53 record that routes a custom domain to the API Gateway endpoint.
+
+  Variables & outputs
+  - A variable for the domain name.
+  - Outputs for the API endpoint URL and the S3 website endpoint (or bucket name).
+
+  Requirements:
+  - Wire resources by reference (the Lambda environment, IAM policy, and API
+    integration should reference the actual table/bucket/function), not hardcoded
+    names.
+  - The configuration must pass `terraform validate`. Do NOT run
+    `terraform apply` — no resources should be created and no AWS account is used.
+
+# Declarative Docker verification: runs `terraform init` (offline, against the
+# image's pre-warmed AWS provider mirror) + `terraform validate`, plus structural
+# HCL checks, as a pytest suite. Score is the fraction of checks that pass.
+verify:
+  image: kirobench-terraform:1.9
+  parser: pytest-json
+  workdir: src
+  tests_subdir: verify/tests
+  setup:
+    - cp "$TESTS_RO"/*.py "$BUILD/src/"
+  test_cmd: >-
+    terraform init -backend=false -input=false -no-color ;
+    python -m pytest -q -p no:cacheprovider
+    --json-report --json-report-file="$RESULTS_DIR/report.json" test_spa.py || true
+  network: none

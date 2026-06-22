@@ -1,0 +1,49 @@
+id: typescript-circuit-breaker
+description: "Brownfield TypeScript: fix four bugs in a circuit breaker + retry library (half-open reset, open->half-open boundary, retry off-by-one, uncapped backoff)"
+timeout_minutes: 15
+functional_pass_threshold: 0.99
+prompt: |
+  A TypeScript resilience library (`@kirobench/resilience`, under `src/`) has a
+  broken circuit breaker and retry policy. Fix the implementation so it behaves
+  correctly. This is a brownfield task: keep the existing public API
+  (`CircuitBreaker`, `CircuitOpenError`, `retry`, and their option types) and the
+  project layout in `src/` — only correct the logic.
+
+  Reported defects:
+
+  CircuitBreaker (`src/lib/circuitBreaker.ts`)
+  1. It never recovers cleanly. A successful call does not reset the
+     consecutive-failure count, so after a half-open probe succeeds (or a success
+     in the closed state) a single later failure can immediately re-open the
+     circuit. A success must reset the failure count to zero; re-opening should
+     require a fresh `failureThreshold` of consecutive failures.
+  2. The open→half-open timeout comparison is off. The breaker should allow a
+     probe once the elapsed time has REACHED `openMillis` (>=), but it currently
+     requires strictly more than `openMillis`, so the probe never fires exactly on
+     the boundary.
+
+  retry (`src/lib/retry.ts`)
+  3. `retry` runs one attempt too many — `fn` is invoked `maxAttempts + 1` times.
+     It must call `fn` at most `maxAttempts` times.
+  4. Backoff is not capped. The delay grows as `baseDelayMs * 2^(attempt-1)` but is
+     never bounded; it must be capped at `maxDelayMs`. Also, there must be no wait
+     after the final attempt (waits happen only BETWEEN attempts).
+
+  The code is in `src/`. Timing is injected (`now` for the breaker, `sleep` for
+  retry) — keep using the injected functions; do not call the real clock or timers
+  directly. An automated vitest suite (which you cannot see or modify) will verify
+  the behavior.
+
+# Declarative verification: run the authoritative vitest suite in the prebuilt
+# Node image and score from the vitest JSON report.
+verify:
+  image: kirobench-node:20
+  parser: vitest-json
+  workdir: src
+  tests_subdir: verify/tests
+  setup:
+    - mkdir -p "$BUILD/src/tests"
+    - cp "$TESTS_RO"/*.test.ts "$BUILD/src/tests/"
+    - ln -s /opt/deps/node_modules "$BUILD/src/node_modules"
+  test_cmd: 'vitest run --reporter=json --outputFile="$RESULTS_DIR/vitest.json"'
+  network: none

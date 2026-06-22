@@ -1,0 +1,86 @@
+# model-compare — run multiple models inside the Kiro CLI across vibe AND
+# spec-driven tasks, comparing quality (functional + spec quality + task
+# completion + steering, optional LLM judge) alongside cost (credits + USD).
+#
+#   kirobench model-compare run config.model-compare.example.yaml
+
+kiro_cli_path: kiro-cli
+kiro_api_key: ${KIRO_API_KEY:-}   # optional; falls back to the CLI login session
+effort: high
+
+# Spec-driven tasks run natively in a single CLI invocation. These args are
+# injected ONLY for spec tasks (vibe tasks are unaffected). `--mode spec`
+# requires `--v3`, so the default is ["--v3", "--mode", "spec"]. Override here
+# if your CLI uses different flags.
+# spec_mode_args: ["--v3", "--mode", "spec"]
+
+# If `--mode spec` reads its request from STDIN (i.e. the prompt is not a
+# trailing arg), set this true so the prompt is piped to stdin for spec tasks.
+# Symptom of needing this: spec runs hang until timeout with no output. Confirm
+# with a manual run first (see README "Troubleshooting spec mode").
+# spec_prompt_via_stdin: true
+
+# Native `--mode spec` requires an interactive terminal, so spec tasks run under
+# a pseudo-terminal (PTY) by default. Set false only if your CLI supports a
+# fully headless spec mode (then a plain pipe is used).
+# spec_use_pty: true
+
+# Models to benchmark — bare ids or dicts. Each desugars to a Kiro target with
+# cost_source=kiro_credits and supports_spec=true.
+models:
+  - auto
+  - claude-opus-4.8
+  - claude-sonnet-4.6
+  - deepseek-3.2
+  - minimax-m2.5
+  - minimax-m2.1
+  - glm-5
+  - qwen3-coder-next
+  - id: claude-haiku-4.5
+    display_name: Haiku 4.5
+
+# Optional: convert native credits to USD in the report.
+pricing:
+  usd_per_credit: 0.04
+
+# Optional harness agents (only if you created them under .kiro/agents/).
+# vibe_agent: vibe-coder
+# spec_driver_agent: spec-driver
+# spec_executor_agent: spec-executor
+
+# LLM-as-judge (routes through the Kiro CLI). Required to score spec artifact
+# quality with the judge — e.g. the task-102-pricing-engine spec task weights
+# spec_artifact_quality, which the judge evaluates. Without it, that dimension
+# falls back to rule-based scoring.
+judge_model: claude-opus-4.8
+judge_weight: 0.6
+
+# Task discovery
+tasks_dir: tasks
+task_ids: 
+modes: ["vibe"]   # run only spec-driven tasks; use [vibe] or [vibe, spec-driven] otherwise
+# task_ids: [fizzbuzz, todo-api, pricing-engine]
+# To benchmark the LLM-as-judge rubric path (no hidden tests needed), include:
+# task_ids: [note-cli]
+# Note: note-cli requires judge_model to be set (see judge_model above).
+# To benchmark against a real GitHub repo (rubric graded, needs git + judge_model):
+# task_ids: [bedrock-sentiment]
+
+# Execution
+# concurrency controls how many task × model jobs run in parallel:
+#   per_target (default) — one job per model at a time (conservative, safe for laptops)
+#   full                 — models × tasks all at once (faster on CI / fast machines)
+#   N                    — explicit integer cap
+# max_concurrency: 8     # optional hard cap applied on top of the strategy
+concurrency: per_target
+timeout_minutes: 30
+repeats: 1
+transient_retries: 2
+pass_threshold: 0.5            # used only for tasks with no functional test
+functional_pass_threshold: 0.99
+workspace_base: /tmp/kirobench-model-compare
+
+# Reporting
+output_dir: results
+report_title: "Benchmark analysis of Kiro supported models"
+open_report: true

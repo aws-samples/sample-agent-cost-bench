@@ -1,0 +1,49 @@
+id: java-ratelimiter
+description: "Brownfield Java/Maven: fix four bugs in a token-bucket + sliding-window rate limiter (refill remainder loss, capacity overflow, acquire off-by-one, window boundary)"
+timeout_minutes: 15
+effort: high
+functional_pass_threshold: 0.99
+prompt: |
+  A Java 17 / Maven rate-limiting library (`com.kirobench.ratelimiter`, under
+  `src/`) has several correctness bugs. Fix the implementation so it behaves
+  correctly. This is a brownfield task: keep the existing public API
+  (`TokenBucket`, `SlidingWindowLimiter`, and the injected `Clock`) and the Maven
+  layout — only correct the logic.
+
+  Reported defects:
+
+  TokenBucket
+  1. It under-refills over time. Refilling adds whole periods' worth of tokens but
+     then discards the leftover time, so fractional progress toward the next
+     refill is lost on every call. Elapsed time that doesn't complete a full
+     period must be carried forward to the next refill.
+  2. Refilling can push the token count above the configured capacity. Tokens must
+     never exceed `capacity`.
+  3. `tryAcquire(n)` grants one token too many — it succeeds when only `n - 1`
+     tokens are available, driving the balance negative. It must succeed only when
+     at least `n` tokens are available.
+
+  SlidingWindowLimiter
+  4. The window boundary is handled incorrectly: a request whose age has reached
+     exactly `windowMillis` is still counted as inside the window. A request that
+     old has expired and must no longer count (in both `tryAcquire` and
+     `currentCount`).
+
+  The code is in `src/` (a standard Maven project). Timing is provided through the
+  injected `Clock` — keep using it; do not call the system clock directly. An
+  automated JUnit suite (which you cannot see or modify) will verify the behavior.
+
+# Declarative verification: run the authoritative JUnit suite in the prebuilt
+# Java image and score from the Surefire XML reports.
+verify:
+  image: kirobench-java:17
+  parser: junit-xml
+  workdir: src
+  tests_subdir: verify/tests
+  setup:
+    - mkdir -p "$BUILD/src/src/test/java/com/kirobench/ratelimiter"
+    - cp "$TESTS_RO"/*.java "$BUILD/src/src/test/java/com/kirobench/ratelimiter/"
+  test_cmd: >-
+    mvn -o -B test -Dmaven.test.failure.ignore=true &&
+    cp target/surefire-reports/TEST-*.xml "$RESULTS_DIR/"
+  network: none

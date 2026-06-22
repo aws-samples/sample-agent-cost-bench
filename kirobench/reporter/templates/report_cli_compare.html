@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ title }}</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+{% include "_styles.html" %}
+</head>
+<body>
+<div class="wrap">
+  <h1>{{ title }}</h1>
+  <div class="sub">
+    Run <b>{{ run_id }}</b> · {{ started_at }} · Comparison: <b>{{ comparison_label }}</b><br>
+    Comparing {{ targets|length }} CLIs: {{ targets|join(", ") }}
+  </div>
+
+  <div class="cards">
+    <div class="card"><div class="label">Total Runs</div><div class="value">{{ total_runs }}</div></div>
+    <div class="card"><div class="label">Passed</div><div class="value">{{ passed_runs }} <span style="font-size:14px;color:var(--muted)">/ {{ pass_rate }}</span></div></div>
+    <div class="card"><div class="label">Failed</div><div class="value">{{ failed_runs }}</div></div>
+    <div class="card"><div class="label">Duration</div><div class="value">{{ duration }}</div></div>
+    <div class="card"><div class="label">Total Cost</div><div class="value cost">${{ total_cost }}</div></div>
+  </div>
+
+  <h2>Cost Comparison — same model across CLIs</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>CLI</th>
+        <th class="num">Pass Rate</th>
+        <th class="num">Avg Functional</th>
+        <th class="num">Avg Cost / Run (USD)</th>
+        <th class="num">Avg Credits / Run</th>
+        <th class="num">Cost / Success (USD)</th>
+        <th class="num">Avg Latency</th>
+        <th class="num">Tokens (in / out)</th>
+        <th class="num">Runs</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for s in target_stats %}
+      <tr>
+        <td><b>{{ s.target }}</b></td>
+        <td class="num">{{ "%.0f%%"|format(s.pass_rate * 100) }}</td>
+        <td class="num">{{ "%.0f%%"|format(s.avg_functional * 100) }}</td>
+        <td class="num cost">{% if s.has_cost %}${{ "%.4f"|format(s.avg_cost) }}{% else %}—{% endif %}</td>
+        <td class="num">{% if s.has_credits %}{{ "%.3f"|format(s.avg_credits) }}{% else %}—{% endif %}</td>
+        <td class="num cost">{% if s.cost_per_pass is not none %}${{ "%.4f"|format(s.cost_per_pass) }}{% else %}n/a{% endif %}</td>
+        <td class="num">{{ "%.1f"|format(s.avg_latency) }}s</td>
+        <td class="num">{% if s.total_input_tokens or s.total_output_tokens %}{{ s.total_input_tokens }} / {{ s.total_output_tokens }}{% else %}—{% endif %}</td>
+        <td class="num">{{ s.passed }}/{{ s.total }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="hint"><b>Cost / Success</b> = total cost ÷ passing runs — the real cost of one working result.</p>
+  <p class="hint"><b>Avg Credits / Run</b> uses each tool's native unit (Kiro credits, Copilot AI credits from <code>totalNanoAiu</code>).
+     Claude Code bills in USD directly and reports no credits (—). Compare credits only within a tool, not across.</p>
+
+  {% if has_cost %}
+  <h2>Charts</h2>
+  <div class="chart-grid">
+    <div class="chart-box"><h3>Avg Cost per Run (USD)</h3><canvas id="costChart"></canvas></div>
+    <div class="chart-box"><h3>Cost per Success (USD)</h3><canvas id="cppChart"></canvas></div>
+    <div class="chart-box"><h3>Pass Rate (%)</h3><canvas id="passChart"></canvas></div>
+    <div class="chart-box"><h3>Avg Latency (s)</h3><canvas id="latChart"></canvas></div>
+  </div>
+  <h3 style="margin:28px 0 14px;">Per-Task Breakdown — each CLI on every task</h3>
+  <div class="chart-grid">
+    <div class="chart-box"><h3>Cost per Run by Task (USD)</h3><canvas id="costByTaskChart"></canvas></div>
+    <div class="chart-box"><h3>Latency by Task (s)</h3><canvas id="latByTaskChart"></canvas></div>
+  </div>
+  {% endif %}
+
+  {% if repeats > 1 %}
+  <h2>Pass@k &amp; Consistency <span style="font-size:13px;color:var(--muted)">(k={{ repeats }})</span></h2>
+  <table>
+    <thead><tr>
+      <th>CLI</th><th class="num">Instances</th><th class="num">pass@1</th>
+      <th class="num">pass@{{ repeats }}</th><th class="num">pass^{{ repeats }}</th>
+      <th class="num">Std Dev</th><th class="num">95% CI</th>
+    </tr></thead>
+    <tbody>
+    {% for s in pass_at_k_rows %}
+      <tr>
+        <td><b>{{ s.target }}</b></td>
+        <td class="num">{{ s.instances }}</td>
+        <td class="num">{{ "%.0f%%"|format(s.pass_at_1 * 100) }}</td>
+        <td class="num">{{ "%.0f%%"|format(s.pass_at_k * 100) }}</td>
+        <td class="num">{{ "%.0f%%"|format(s.pass_all_k * 100) }}</td>
+        <td class="num">±{{ "%.2f"|format(s.stddev) }}</td>
+        <td class="num">{{ "%.0f"|format(s.ci_low * 100) }}–{{ "%.0f%%"|format(s.ci_high * 100) }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  <h2>Detailed Results</h2>
+  <table>
+    <thead><tr>
+      <th>Task</th><th>CLI</th>{% if repeats > 1 %}<th class="num">#</th>{% endif %}
+      <th>Status</th><th class="num">Functional</th><th class="num">Cost</th>
+      <th class="num">Credits</th><th class="num">Tokens</th><th class="num">Latency</th>
+    </tr></thead>
+    <tbody>
+    {% for r in result_rows %}
+      <tr>
+        <td>{{ r.task_id }}</td>
+        <td>{{ r.target }}</td>
+        {% if repeats > 1 %}<td class="num">{{ r.repeat }}</td>{% endif %}
+        <td><span class="badge {{ r.status_class }}">{{ r.status }}</span></td>
+        <td class="num">{{ "%.0f%%"|format(r.functional_score * 100) }}</td>
+        <td class="num cost">{% if r.cost_usd is not none %}${{ "%.4f"|format(r.cost_usd) }}{% else %}—{% endif %}</td>
+        <td class="num">{% if r.credits is not none %}{{ "%.3f"|format(r.credits) }}{% else %}—{% endif %}</td>
+        <td class="num">{% if r.input_tokens is not none %}{{ r.input_tokens }}/{{ r.output_tokens }}{% else %}—{% endif %}</td>
+        <td class="num">{{ "%.1f"|format(r.cli_time) }}s</td>
+      </tr>
+      <tr><td colspan="{{ 9 if repeats > 1 else 8 }}" style="padding:0;border:none;">
+        <details>
+          <summary>{{ r.functional_summary or "details" }}{% if r.error_message %} — {{ r.error_message }}{% endif %}</summary>
+          <pre>
+{%- if r.error_message %}
+ERROR: {{ r.error_message }}
+{%- endif %}
+{%- if r.functional_checkpoints %}
+{%- for key, val in r.functional_checkpoints.items() %}
+{%- if val is mapping %}
+  {{ "✓" if val.passed else "✗" }} {{ key }}{% if val.criterion %}: {{ val.criterion }}{% endif %}{% if val.detail %} — {{ val.detail }}{% endif %}
+{%- if val.passed and val.passed_names is defined and val.passed_names %}
+{%- for t in val.passed_names %}
+      ✓ {{ t | replace('test_', '', 1) | replace('_', ' ') }}
+{%- endfor %}
+{%- elif not val.passed and val.failed is defined and val.failed %}
+{%- for t in val.failed %}
+      ✗ {{ t | replace('test_', '', 1) | replace('_', ' ') }}
+{%- endfor %}
+{%- endif %}
+{%- else %}
+  {{ "✓" if val else "✗" }} {{ key }}
+{%- endif %}
+{%- endfor %}
+{%- endif %}
+{%- if r.functional_stdout %}
+--- verify stdout ---
+{{ r.functional_stdout }}
+{%- endif %}
+{%- if r.functional_stderr %}
+--- verify stderr ---
+{{ r.functional_stderr }}
+{%- endif %}
+
+workspace: {{ r.workspace_path }}</pre>
+        </details>
+        <details>
+          <summary>CLI transcript — {{ r.target }}</summary>
+          <pre>--- {{ r.target }} stdout ---
+{{ r.agent_stdout or "(empty)" }}
+
+--- {{ r.target }} stderr ---
+{{ r.agent_stderr or "(empty)" }}</pre>
+        </details>
+      </td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if has_cost %}
+<script>
+  const labels = {{ chart_labels|safe }};
+  const ACCENT = "#6ea8fe", COST = "#d8b4fe", PASS = "#34d399", WARN = "#fbbf24";
+  const gridColor = "rgba(255,255,255,.06)", tickColor = "#9aa0ac";
+  const baseOpts = {
+    responsive: true,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { grid: { color: gridColor }, ticks: { color: tickColor } },
+      y: { grid: { color: gridColor }, ticks: { color: tickColor }, beginAtZero: true }
+    }
+  };
+  function bar(id, data, color) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    new Chart(el, { type: "bar",
+      data: { labels, datasets: [{ data, backgroundColor: color, borderRadius: 6 }] },
+      options: baseOpts });
+  }
+  bar("costChart", {{ chart_avg_cost|safe }}, COST);
+  bar("cppChart", {{ chart_cost_per_pass|safe }}, COST);
+  bar("passChart", {{ chart_pass_rate|safe }}, PASS);
+  bar("latChart", {{ chart_latency|safe }}, ACCENT);
+
+  const PALETTE = [ACCENT, COST, PASS, WARN, "#f87171", "#22d3ee", "#a3e635"];
+  const taskLabels = {{ chart_task_labels|safe }};
+  function groupedBar(id, series, yLabel) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const datasets = series.map((s, i) => ({
+      label: s.label, data: s.data,
+      backgroundColor: PALETTE[i % PALETTE.length], borderRadius: 6,
+    }));
+    new Chart(el, {
+      type: "bar",
+      data: { labels: taskLabels, datasets },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: true, labels: { color: tickColor } } },
+        scales: {
+          x: { grid: { color: gridColor }, ticks: { color: tickColor } },
+          y: { grid: { color: gridColor }, ticks: { color: tickColor }, beginAtZero: true,
+               title: { display: true, text: yLabel, color: tickColor } }
+        }
+      }
+    });
+  }
+  groupedBar("costByTaskChart", {{ chart_task_cost|safe }}, "USD");
+  groupedBar("latByTaskChart", {{ chart_task_latency|safe }}, "seconds");
+</script>
+{% endif %}
+</body>
+</html>

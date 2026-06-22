@@ -1,0 +1,74 @@
+# cli-compare — run coding CLIs against the same vibe tasks and compare cost.
+#
+#   kirobench cli-compare run config.cli-compare.example.yaml
+#
+# `comparison_label` is a reporting headline only — it names what this run
+# compares. Each runner still uses its own `model_id` (which may differ between
+# CLIs); the label does NOT set or override any model. Optional; defaults to
+# "cross-CLI comparison".
+
+comparison_label: claude-sonnet-4.6 across CLIs
+
+# LLM-as-judge for rubric tasks (optional — only needed if task_ids includes
+# rubric tasks like bedrock-sentiment that have quality.rubric).
+# The judge always uses the Kiro CLI regardless of which runner CLIs are
+# being benchmarked, so set judge_cli_path to your Kiro binary name.
+# judge_model: claude-opus-4.8
+# judge_cli_path: kiro-cli   # required if your Kiro binary is not literally "kiro"
+# judge_weight: 0.6
+effort: high
+runners:
+  - name: kiro
+    display_name: Kiro CLI
+    cli_path: kiro-cli
+    model_id: claude-sonnet-4.6
+    cost_source: kiro_credits
+    pricing:
+      usd_per_credit: 0.04
+    # Kiro reads the prompt as a trailing arg; model flag is inline here.
+    cli_base_args: [chat, --no-interactive, --trust-all-tools, "--model={model}", "--effort={effort}"]
+
+  - name: claude-code
+    display_name: Claude Code
+    cli_path: claude
+    model_id: us.anthropic.claude-sonnet-4-6
+    cost_source: claude_json   # CLI reports total_cost_usd directly
+    cli_base_args: ["-p", "{prompt}", "--output-format", "json",
+                    "--model", "{model}", "--dangerously-skip-permissions", "--effort", "{effort}"]
+
+  - name: copilot
+    display_name: GitHub Copilot
+    cli_path: copilot
+    model_id: claude-sonnet-4.6
+    cost_source: copilot_json  # totalNanoAiu from session-state; fallback below
+    pricing:
+      usd_per_premium_request: 0.04
+    cli_base_args: ["-p", "{prompt}", "--model", "{model}",
+                    "--allow-all-tools", "--output-format", "json", "--effort", "{effort}"]
+
+# Task discovery (cli-compare is vibe-only; spec tasks are skipped)
+tasks_dir: tasks
+task_ids:
+modes: ["vibe"]
+
+# LLM as Judge
+judge_cli_path: kiro-cli
+judge_model: claude-opus-4.8
+judge_weight: 0.6
+
+# Execution
+# concurrency controls how many task × runner jobs run in parallel:
+#   per_target (default) — one job per runner at a time (conservative, safe for laptops)
+#   full                 — runners × tasks all at once (faster on CI / fast machines)
+#   N                    — explicit integer cap
+# max_concurrency: 8     # optional hard cap applied on top of the strategy
+concurrency: per_target
+timeout_minutes: 15
+repeats: 1
+functional_pass_threshold: 0.99
+workspace_base: /tmp/kirobench-cli-compare
+
+# Reporting
+output_dir: results
+report_title: "Benchmark Analysis of Sonnet 4.6 across Kiro, Claude Code and Copilot"
+open_report: true

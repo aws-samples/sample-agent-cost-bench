@@ -1,0 +1,77 @@
+id: geotrack-duplicate-device
+mode: vibe
+description: "Prevent assigning the same IoT device to two active delivery routes in the Amazon Location GeoTrack Vue.js app"
+timeout_minutes: 20
+
+# 6 of 8 criteria must be met to pass (75%).
+functional_pass_threshold: 0.75
+
+prompt: |
+  This is a Vue.js web app (Vuetify + AWS Amplify) for managing a delivery fleet.
+  An operator creates delivery routes and assigns each route to a delivery agent.
+  Every agent is tied to a unique IoT device that reports its GPS position.
+
+  There is a known bug: the app lets you assign the SAME IoT device to two
+  different active routes at the same time. When that happens, both routes report
+  positions from one device and the live tracking becomes inconsistent.
+
+  Your task: when an operator creates a new route, prevent saving it if the chosen
+  agent's IoT device is already assigned to another route that is currently active
+  (in transit). Instead of saving, show the operator a clear message explaining
+  that the device is already in use, and let them pick a different agent.
+
+  Requirements:
+  1. Before a new route is persisted, check whether the selected agent's IoT
+     device is already on another active route.
+  2. If it is, do NOT save the route — block the operation and surface a clear,
+     specific message to the user about the duplicate device.
+  3. If it is not, the route saves and behaves exactly as it does today.
+  4. Base the check on the IoT device identifier, and on routes that are actually
+     active/in transit — not on all historical routes.
+  5. Explore the project to find where routes are created and where fleet/route
+     data is fetched; reuse existing data-access logic where it already exists
+     rather than duplicating it.
+
+  Work only within the Vue web application (the webapp). Do not change the backend
+  Lambdas, the GraphQL schema, or the infrastructure template.
+
+# Public AWS sample, cloned into the workspace before the model runs.
+# Pinned to a full commit SHA so every run sees identical source.
+repo:
+  url: https://github.com/aws-samples/amazon-location-service-geotrack-vuejs
+  # ref: which version of the repo to clone.
+  #   Use a full 40-char commit SHA (recommended) — permanently pinned, every
+  #   benchmark run gets identical code regardless of when it runs.
+  #   A branch name (e.g. main) is NOT recommended: the branch advances over
+  #   time so two runs may get different code and produce incomparable scores.
+  #   To find the SHA: git ls-remote <url> HEAD  OR  git log --oneline -1
+  ref: 62483161238433097a24027a9935a34fa1de56b7
+  # Only the Vue frontend is in scope, so sparse-checkout just that subdirectory.
+  subdir: webapp
+  depth: 1
+  # Private repos (HTTPS only): authenticate the clone with a personal access token.
+  # This repo is public, so these are left commented out. To benchmark against a
+  # PRIVATE repo, export a token and uncomment:
+  #   export GITHUB_TOKEN=ghp_xxx   # in your shell, before running kirobench
+  # token_env points at the NAME of that env var — NEVER paste the token here
+  # (it would be committed to task.yaml). The token is read at runtime and sent
+  # via an ephemeral git auth header: it is never written to .git/config and
+  # never shows up in the process list.
+  # token_env: GITHUB_TOKEN
+  # token_user is the basic-auth username paired with the token. The default
+  # 'x-access-token' works for GitHub; use 'oauth2' for GitLab, 'x-token-auth'
+  # for Bitbucket.
+  # token_user: x-access-token
+
+# No-code quality grading: the judge inspects the produced code against each
+# criterion. Requires `judge_model` in your model-compare / cli-compare config.
+quality:
+  rubric:
+    - "When a new delivery route is created/saved, the code checks whether the selected agent's IoT device is already assigned to another active (in-transit) route before saving"
+    - "The duplicate check is based on the set of devices currently on active routes (e.g. by reusing the existing in-route device lookup such as fetchDevicesIdsInRoute / devicesIdsInRoute, or an equivalent query of active trips) rather than a hardcoded or empty list"
+    - "If the device is already in use, the new route is NOT persisted — the save/GraphQL mutation is skipped or aborted for that case"
+    - "The user is shown a clear, specific message indicating that the IoT device (or its agent) is already assigned to an active route"
+    - "If the device is not already in use, the route saves and the normal happy path is unchanged (no regression)"
+    - "Duplicates are identified by the IoT device identifier (deviceId), not merely by driver/agent name or route id"
+    - "The validation runs before the save mutation is invoked, so it prevents the write rather than cleaning up afterwards"
+    - "The change is contained to the Vue frontend (e.g. the trips/routes view and/or the geo store) and does not break unrelated functionality such as listing, deleting, or viewing routes on the map"

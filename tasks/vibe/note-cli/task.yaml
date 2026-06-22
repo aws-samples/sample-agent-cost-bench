@@ -1,0 +1,39 @@
+id: note-cli
+mode: vibe
+description: "Build a command-line note-taking tool in Python (no external libraries)"
+timeout_minutes: 10
+
+# Pass threshold: 6 of 8 criteria met (75%) — rubric tasks rarely need 100%.
+functional_pass_threshold: 0.75
+
+prompt: |
+  Build a command-line note-taking tool in Python.
+  Save it as notes_cli.py. It must support four commands:
+
+    python notes_cli.py add "Buy groceries"   → append the note to notes.txt
+    python notes_cli.py list                  → print all notes with 1-based line numbers
+    python notes_cli.py search "groceries"    → print only notes containing the keyword
+    python notes_cli.py delete 2              → delete the note at position 2
+
+  Requirements:
+  - Notes persist in a file called notes.txt in the current directory.
+  - Line numbers in 'list' and 'search' output are 1-based (1, 2, 3 …).
+  - 'search' is case-insensitive.
+  - 'delete' renumbers the remaining notes so there are no gaps.
+  - Handle missing notes.txt gracefully (do not crash).
+  - Use only the Python standard library — no third-party packages.
+
+# No-code quality grading: the LLM judge checks each criterion against the
+# produced files (met/unmet). Score = fraction met.
+# Requires `judge_model` in your model-compare config.
+quality:
+  rubric:
+    - "notes_cli.py is created in the workspace"
+    - "'add <text>' command appends the note as a new line to notes.txt and creates the file if it does not exist"
+    - "'list' command prints all stored notes with 1-based line numbers (e.g. '1. Buy groceries')"
+    - "'search <keyword>' prints only notes whose text contains the keyword, case-insensitively"
+    - "'delete <n>' removes the nth note and the remaining notes are correctly renumbered with no gaps"
+    - "notes.txt is written to disk and would persist between separate invocations of the script"
+    - "the script does not crash when notes.txt does not exist (e.g. on the first 'list' or 'search' call)"
+    - "only Python standard library modules are imported (no third-party packages such as click, typer, or rich)"
+  reference_solution: ref/notes_cli.py

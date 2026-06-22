@@ -1,0 +1,30 @@
+id: dockerize-flask
+description: "Brownfield IaC (Docker): add a production-ready Dockerfile + docker-compose.yml to an existing Flask app"
+timeout_minutes: 12
+prompt: |
+  The src/ directory contains an existing Flask application (app.py with a
+  requirements.txt) that has no containerization. Add a production-ready container
+  setup.
+
+  Create the following files inside the src/ directory:
+
+  1. A Dockerfile that:
+     - uses an official slim Python base image (e.g. python:3.12-slim)
+     - sets a working directory
+     - installs the Python dependencies from requirements.txt
+     - copies in the application code
+     - creates a non-root user and switches to it with USER
+     - exposes port 5000
+     - starts the app with gunicorn bound to 0.0.0.0:5000 (the Flask object is
+       named `app` in app.py)
+
+  2. A docker-compose.yml that:
+     - defines a service that builds from the Dockerfile in this directory
+     - maps host port 5000 to container port 5000
+
+  Do NOT build the image or start Docker — only create the files.
+
+# Centralized local verification: framework-managed venv + deps + scorer.
+verify:
+  runner: pytest
+  deps: ["pyyaml==6.0.2"]

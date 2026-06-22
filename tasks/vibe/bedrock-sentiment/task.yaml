@@ -1,0 +1,80 @@
+id: bedrock-sentiment
+mode: vibe
+description: "Migrate tweet-text sentiment analysis from Amazon Comprehend to Amazon Bedrock in the aws-samples serverless face-recognition demo"
+timeout_minutes: 20
+
+# 6 of 8 criteria must be met to pass (75%).
+functional_pass_threshold: 0.75
+
+prompt: |
+  This is an AWS serverless (AWS SAM) application written in Python. It ingests
+  tweets, runs image/face analysis, and also performs SENTIMENT ANALYSIS on the
+  text of each tweet. Today that text sentiment analysis is done with Amazon
+  Comprehend.
+
+  Your task: replace the Amazon Comprehend text-sentiment analysis with Amazon
+  Bedrock. Use a Bedrock foundation model (via the bedrock-runtime client) to
+  classify the sentiment of the tweet text instead of calling Comprehend.
+
+  Requirements:
+  1. Find where the tweet text sentiment is computed and change it to call Amazon
+     Bedrock. Explore the repository to locate the relevant Lambda — do not assume
+     a path.
+  2. Send the tweet text to a Bedrock foundation model with a prompt that asks it
+     to classify the sentiment, then parse the model's response down to a single
+     sentiment label.
+  3. Keep the result compatible with the rest of the pipeline: the stored
+     sentiment value should still be one of POSITIVE, NEGATIVE, NEUTRAL, or MIXED
+     (the same set Comprehend returned) so downstream storage, queries, and the
+     dashboard keep working unchanged.
+  4. Preserve the existing resilience: wrap the Bedrock call so a failure returns
+     a safe default sentiment instead of crashing the Lambda.
+  5. Update the SAM template so the processing function has IAM permission to
+     invoke Bedrock. Comprehend permissions for sentiment are no longer needed.
+  6. Leave the rest of the pipeline (face detection, per-face records, writes to
+     S3/Firehose) intact — only the text-sentiment source should change.
+
+  Work within this repository. Do not add new AWS services beyond Amazon Bedrock,
+  and do not change the facial/image analysis.
+
+# Public AWS sample, cloned into the workspace root before the model runs.
+# Pinned to a full commit SHA so every run sees identical source.
+repo:
+  url: https://github.com/aws-samples/aws-serverless-face-recognition-sentiment-analysis-on-twitter
+  # ref: which version of the repo to clone.
+  #   Use a full 40-char commit SHA (recommended) — permanently pinned, every
+  #   benchmark run gets identical code regardless of when it runs.
+  #   A branch name (e.g. main) is NOT recommended: the branch advances over
+  #   time so two runs may get different code and produce incomparable scores.
+  #   To find the SHA: git ls-remote <url> HEAD  OR  git log --oneline -1
+  ref: c76d6e3f7c7240b5bba6bcd85cf25b7c9771bbe2
+  # No subdir: the migration touches both a Lambda (under lambdas/) and the SAM
+  # template (template.yaml) at the repo root, so the whole repo is cloned.
+  depth: 1
+  # Private repos (HTTPS only): authenticate the clone with a personal access token.
+  # This repo is public, so these are left commented out. To benchmark against a
+  # PRIVATE repo, export a token and uncomment:
+  #   export GITHUB_TOKEN=ghp_xxx   # in your shell, before running kirobench
+  # token_env points at the NAME of that env var — NEVER paste the token here
+  # (it would be committed to task.yaml). The token is read at runtime and sent
+  # via an ephemeral git auth header: it is never written to .git/config and
+  # never shows up in the process list.
+  # token_env: GITHUB_TOKEN
+  # token_user is the basic-auth username paired with the token. The default
+  # 'x-access-token' works for GitHub; use 'oauth2' for GitLab, 'x-token-auth'
+  # for Bitbucket.
+  # token_user: x-access-token
+
+# No-code quality grading: the judge inspects the produced code against each
+# criterion. Requires `judge_model` in your model-compare / cli-compare config.
+quality:
+  rubric:
+    - "The tweet-text sentiment is now produced by Amazon Bedrock: a bedrock-runtime client (e.g. boto3.client('bedrock-runtime')) is created and invoked (invoke_model or converse)"
+    - "The Amazon Comprehend detect_sentiment call is removed or is no longer the source of the tweet sentiment value"
+    - "The Bedrock invocation sends the tweet text to a foundation model with a prompt that instructs it to classify the sentiment of that text"
+    - "The Bedrock model's response is parsed to extract a single sentiment label — the raw model output is not stored verbatim as the sentiment"
+    - "The resulting sentiment value stays compatible with the existing pipeline: one of POSITIVE / NEGATIVE / NEUTRAL / MIXED is stored in the face record's sentiment field (e.g. fdata['sentiment'])"
+    - "The Bedrock call is wrapped in error handling that returns a safe default sentiment (e.g. 'NEUTRAL' or 'Unknown') on failure, so a model or throttling error does not crash the Lambda"
+    - "The SAM template (template.yaml) is updated to grant the processing Lambda permission to invoke Bedrock (e.g. a bedrock:InvokeModel IAM policy statement)"
+    - "The rest of the pipeline is left intact: faces are still detected, the sentiment is still attached per face record, and records are still written to S3 / Firehose"
+  reference_solution: ref/correct_implementation.md

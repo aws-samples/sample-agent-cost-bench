@@ -1,0 +1,31 @@
+id: log-analyzer-cli
+description: "Greenfield Python CLI: parse Common Log Format access logs into a JSON summary (status classes, top IPs, total bytes)"
+timeout_minutes: 15
+prompt: |
+  Build a command-line log analyzer in Python.
+
+  Create loganalyzer.py that reads a Common Log Format access log (Apache/Nginx
+  style) and prints a JSON summary to stdout. Each log line looks like:
+
+      10.0.0.1 - - [10/Oct/2020:13:55:36 -0700] "GET /index.html HTTP/1.1" 200 2326
+
+  The fields you need are: the client IP (first token), the HTTP status code, and
+  the response size in bytes (the last two tokens).
+
+  Behaviour:
+  - Read the log from a file path given as the first positional argument, or from
+    stdin if no path is given.
+  - Print a single JSON object (and nothing else) with exactly these keys:
+      "total_requests": total number of log lines successfully parsed (int)
+      "status_classes": object mapping "2xx","3xx","4xx","5xx" to their counts (int)
+      "top_ips": list of [ip, count] pairs, highest count first; on ties order by
+                 IP ascending; limited to the value of --top
+      "total_bytes": sum of the response size field across all parsed requests (int)
+  - Support a --top N option controlling how many top IPs are returned (default 5).
+  - Ignore malformed lines instead of crashing.
+
+  Run it against a sample log to confirm it works.
+
+# Centralized local verification (stdlib only — no extra deps).
+verify:
+  runner: pytest

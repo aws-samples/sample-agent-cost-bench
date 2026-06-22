@@ -1,0 +1,10 @@
+{
+  "name": "kirobench-warm",
+  "private": true,
+  "description": "Warm project: bakes vitest + typescript into the image's node_modules so TS verification runs offline.",
+  "devDependencies": {
+    "typescript": "5.5.4",
+    "vitest": "2.0.5",
+    "@types/node": "20.14.10"
+  }
+}

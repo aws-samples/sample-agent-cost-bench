@@ -1,0 +1,37 @@
+id: rest-api
+description: "Build a simple REST API in Python (FastAPI) with CRUD endpoints for a Todo list"
+timeout_minutes: 10
+prompt: |
+  Create a REST API using FastAPI with the following endpoints for a Todo list:
+
+  - GET /todos — list all todos
+  - POST /todos — create a new todo (body: {"title": str, "done": bool})
+  - GET /todos/{id} — get a specific todo
+  - PUT /todos/{id} — update a todo
+  - DELETE /todos/{id} — delete a todo
+
+  Requirements:
+  - Use an in-memory list (no database needed)
+  - Each todo has: id (int, auto-increment), title (str), done (bool, default false)
+  - Return 404 for missing todos
+  - Save as main.py
+  - Include a requirements.txt with fastapi and uvicorn
+  - Write a test file test_api.py using pytest and httpx that tests all endpoints
+  - Run the tests to verify everything works
+
+# Centralized local verification: framework-managed venv + deps + scorer.
+# score.py runs the harness pytest suite (verify/test_todo_api.py) against the
+# model's app and emits a graduated KIROBENCH_RESULT marker.
+verify:
+  runner: pytest
+  deps:
+    - fastapi==0.104.1
+    - starlette==0.27.0
+    - httpx==0.27.2
+    - uvicorn==0.24.0
+    - pydantic==2.5.0
+    - pydantic-core==2.14.1
+    - pytest==9.0.3
+    - pytest-asyncio==1.4.0
+    - anyio==3.7.1
+    - trio==0.33.0

@@ -1,0 +1,74 @@
+id: helm-chart
+description: "Write a production-ready Helm chart for a web microservice: parameterized Deployment, Service, Ingress (TLS), HPA, ConfigMap, and ServiceAccount"
+timeout_minutes: 20
+effort: high
+
+# Graduated: helm lint + helm template + structural checks.
+functional_pass_threshold: 0.8
+
+prompt: |
+  Create a Helm chart in src/ for deploying a web microservice to Kubernetes.
+  The chart directory should follow standard Helm structure:
+
+      src/
+        Chart.yaml
+        values.yaml
+        templates/
+          deployment.yaml
+          service.yaml
+          ingress.yaml
+          hpa.yaml
+          configmap.yaml
+          serviceaccount.yaml
+          _helpers.tpl        (optional but recommended)
+
+  The chart must support these configurable values (in values.yaml with sensible
+  defaults):
+
+  - image.repository / image.tag — container image (default: nginx / "1.27")
+  - replicaCount — initial replicas (default: 2)
+  - service.type — ClusterIP by default
+  - service.port — the Service port (default: 80)
+  - ingress.enabled — boolean (default: true)
+  - ingress.host — hostname (default: "app.example.com")
+  - ingress.tls.enabled — boolean (default: true)
+  - ingress.tls.secretName — TLS secret name
+  - resources.requests.cpu / memory — resource requests
+  - resources.limits.cpu / memory — resource limits
+  - autoscaling.enabled — enable HPA (default: true)
+  - autoscaling.minReplicas / maxReplicas / targetCPUUtilizationPercentage
+  - config — a map of key/value pairs rendered into a ConfigMap and mounted as
+    environment variables on the Deployment
+  - serviceAccount.create — boolean (default: true)
+  - serviceAccount.name — override name (default: use chart release name)
+
+  Requirements:
+  - Chart.yaml must have name, version, and appVersion fields.
+  - Templates must use standard Helm idioms: {{ .Values.* }}, {{ include }},
+    named templates in _helpers.tpl, conditionals ({{ if }}) for optional
+    resources.
+  - The Deployment should reference the ServiceAccount, mount the ConfigMap as
+    envFrom, and set resource requests/limits from values.
+  - The Ingress should be conditional on ingress.enabled and include TLS when
+    ingress.tls.enabled is true.
+  - The HPA should be conditional on autoscaling.enabled and target the
+    Deployment.
+  - The chart must pass `helm lint` and `helm template .` without errors.
+
+  Do NOT install or deploy the chart — only create the files.
+
+# Docker verification: helm lint + helm template + pytest structural checks on
+# the rendered output. Fully offline (Helm needs no network for local rendering).
+verify:
+  image: kirobench-helm:3.16
+  parser: pytest-json
+  workdir: src
+  tests_subdir: verify/tests
+  setup:
+    - cp "$TESTS_RO"/*.py "$BUILD/src/"
+  test_cmd: >-
+    helm lint . --strict 2>&1 ;
+    helm template test-release . --values values.yaml > /tmp/rendered.yaml 2>&1 ;
+    RENDERED=/tmp/rendered.yaml python -m pytest -q -p no:cacheprovider
+    --json-report --json-report-file="$RESULTS_DIR/report.json" test_helm.py || true
+  network: none

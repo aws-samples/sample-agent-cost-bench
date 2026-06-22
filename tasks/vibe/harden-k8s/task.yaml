@@ -1,0 +1,51 @@
+id: harden-k8s
+description: "Brownfield Kubernetes security hardening: harden an insecure multi-resource manifest set (Deployment, Service, Ingress) — add securityContext, NetworkPolicy, ServiceAccount, PDB, TLS, Seccomp, resource limits, and probes"
+timeout_minutes: 20
+prompt: |
+  The src/ directory contains a Kubernetes manifest file (src/deployment.yaml)
+  with an insecure, production-unready Deployment, a bare Service, and an Ingress
+  with no TLS. Harden the whole set in place, keeping the same names (Deployment
+  "web", Service "web", Ingress "web") and existing labels/selectors so the
+  application keeps working. You may add new resource documents to the same file
+  or to new .yaml files alongside it.
+
+  Apply ALL of the following:
+
+  Deployment hardening
+  - Pin the container image to a specific version tag (not `latest`).
+  - Add CPU and memory resource requests AND limits to the container.
+  - Add a container securityContext that:
+      - runs as non-root (runAsNonRoot: true)
+      - mounts the root filesystem read-only (readOnlyRootFilesystem: true)
+      - drops all Linux capabilities (capabilities.drop: ["ALL"])
+      - disables privilege escalation (allowPrivilegeEscalation: false)
+  - Add a Seccomp profile (seccompProfile, type: RuntimeDefault) — at the pod
+    or container level.
+  - Add both a livenessProbe and a readinessProbe to the container.
+  - Disable automounting the service account token (automountServiceAccountToken: false)
+    at the pod spec level.
+  - Add a topologySpreadConstraint to spread pods across nodes.
+
+  ServiceAccount
+  - Create a dedicated ServiceAccount for the Deployment. Reference it from the
+    pod spec. Set automountServiceAccountToken: false on the ServiceAccount itself.
+
+  NetworkPolicy
+  - Create a NetworkPolicy that restricts ingress to the web pods: only allow
+    traffic on the app port (8080) and only from the Ingress controller
+    (common label is typically something like "app.kubernetes.io/name: ingress-nginx"
+    or similar — any reasonable selector is fine).
+
+  Ingress TLS
+  - Add a TLS section to the Ingress for the existing host with a secretName.
+
+  PodDisruptionBudget
+  - Create a PodDisruptionBudget (PDB) for the web Deployment that ensures at
+    least 1 pod is always available during voluntary disruptions.
+
+  Keep all manifests valid YAML. Do NOT apply to a cluster — only edit/create files.
+
+# Centralized local verification: framework-managed venv + pyyaml.
+verify:
+  runner: pytest
+  deps: ["pyyaml==6.0.2"]

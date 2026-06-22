@@ -1,0 +1,39 @@
+# --- kirobench run artifacts (may contain prompts, model output, secrets) ---
+results/
+*.partial.json
+.repo_cache/
+
+# --- local config that may hold API keys (commit only the *.example.yaml) ---
+config.yaml
+config.*.yaml
+!config.*.example.yaml
+.env
+.env.*
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.venv-verify/
+.kirobench_venv/
+
+# --- test / tooling caches ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- workspaces / scratch ---
+/tmp/kirobench-*/
+*.db
+
+# --- editor / OS ---
+.idea/
+.vscode/
+.DS_Store

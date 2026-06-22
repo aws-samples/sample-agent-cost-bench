@@ -1,0 +1,27 @@
+id: terraform-s3
+description: "Write Terraform to provision a secure AWS S3 bucket: versioning, AES256 encryption, public access blocked, variable + output"
+timeout_minutes: 10
+prompt: |
+  Write Terraform configuration that provisions a secure AWS S3 bucket.
+
+  Create these files in the current directory:
+  - main.tf — define:
+    - a required_providers block pinning the AWS provider (source "hashicorp/aws")
+    - an aws_s3_bucket resource
+    - aws_s3_bucket_versioning with versioning enabled (status "Enabled")
+    - aws_s3_bucket_server_side_encryption_configuration using AES256
+    - aws_s3_bucket_public_access_block with all four settings set to true
+      (block_public_acls, block_public_policy, ignore_public_acls, restrict_public_buckets)
+  - variables.tf — a variable "bucket_name" (type string, no default)
+  - outputs.tf — an output "bucket_arn" exposing the bucket's ARN
+
+  Requirements:
+  - The bucket name must come from the bucket_name variable.
+  - The versioning, encryption, and public-access-block resources must reference the bucket.
+  - Do NOT run `terraform apply`. Only create the files. You may run `terraform validate` to check your work.
+
+# Centralized local verification: the framework creates an isolated venv,
+# installs `deps`, and runs `score` (which prints a KIROBENCH_RESULT marker).
+verify:
+  runner: pytest
+  deps: ["python-hcl2==4.3.5"]

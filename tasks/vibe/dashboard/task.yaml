@@ -1,0 +1,22 @@
+id: dashboard
+description: "Build a full-stack Todo dashboard: FastAPI backend + single-page HTML/JS frontend with add, toggle, and delete"
+timeout_minutes: 20
+prompt: |
+  Build a full-stack Todo dashboard. Create main.py (FastAPI) with four endpoints: GET /api/todos returns all todos as a JSON list; POST /api/todos creates a todo from {"title": str, "done": false}; PUT /api/todos/{id} updates a todo and returns 404 if not found; DELETE /api/todos/{id} deletes a todo and returns 404 if not found. Also add GET / that serves index.html. Use in-memory storage, auto-increment integer ids starting at 1.
+
+  Create index.html with a text input and submit button to add a new todo, a list of all todos that updates immediately (no page reload), a checkbox per todo that toggles done via PUT, a strikethrough style when done is true, and a delete button per todo that calls DELETE and removes the item. Use plain fetch() — no framework.
+
+  Create requirements.txt listing fastapi and uvicorn. Ensure the app can be started with `uvicorn main:app --host 0.0.0.0 --port 8000`, but do not start the server yourself — only create the files.
+
+# Centralized local verification: framework-managed venv + deps + scorer.
+# score.py exercises the CRUD API (TestClient), boots the app with uvicorn for a
+# live GET / check, and statically analyzes index.html for the UI wiring.
+verify:
+  runner: pytest
+  deps:
+    - fastapi==0.104.1
+    - starlette==0.27.0
+    - httpx==0.27.2
+    - uvicorn==0.24.0
+    - pydantic==2.5.0
+    - pydantic-core==2.14.1

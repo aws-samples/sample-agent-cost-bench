@@ -1,0 +1,14 @@
+id: auth-feature
+mode: spec-driven
+description: "Implement JWT authentication with login, logout, and refresh token endpoints"
+timeout_minutes: 20
+trust_tools: [read, write, shell]
+
+spec_workflow: requirements-first
+seed_spec: true          # requirements.md is pre-seeded in seed/
+require_all_tasks: true
+
+# Scoring is inherited from the spec-driven default
+# (functional_tests 0.50 · spec_artifact_quality 0.25 ·
+#  task_completion_rate 0.15 · steering_adherence 0.10).
+# Add a `scoring:` block only to override it.
