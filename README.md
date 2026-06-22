@@ -115,23 +115,81 @@ discovered tasks), and which kinds run with `modes`.
 
 ## How verification works
 
-Each task declares how it is graded in its `task.yaml`, so there is no per-task
-shell boilerplate:
+After a model finishes a task, the framework scores its output. You choose how a
+task is scored by adding a block to its `task.yaml`. There are four options. Pick
+the one that fits your task.
 
-- **`verify: { runner: local }`** — the framework builds an isolated venv and
-  runs a `verify/score.py` scorer that inspects the workspace.
-- **`verify: { runner: pytest }`** or hidden `verify/tests/` — authoritative
-  tests (kept out of the model's workspace) decide the score.
-- **`verify: { image: ... }`** — tests run inside a Docker container with the
-  right toolchain, isolated and offline.
-- **`quality.rubric`** — plain-English acceptance criteria graded by the LLM
-  judge; no verification code required.
+### 1. Run Python tests (`verify: { runner: pytest }`)
 
-A scorer can report partial credit by printing a result marker:
+Use this when you can write tests to check the output. Put your test files in the
+task's `verify/` folder (the model never sees them, so it can't cheat). List any
+pip packages the tests need under `deps`. The framework creates a clean virtual
+environment, installs `deps`, and runs the tests.
+
+```yaml
+verify:
+  runner: pytest
+  deps: ["fastapi==0.104.1", "httpx==0.27.2", "pytest==9.0.3"]
+```
+
+### 2. Run a custom scorer (`verify: { runner: local }`)
+
+Use this when "pass/fail" isn't enough and you want to inspect files yourself.
+Write a `verify/score.py` that looks at the workspace and prints a score line
+(see "Partial credit" below). Same isolated venv + `deps` as above.
+
+```yaml
+verify:
+  runner: local
+  deps: ["python-hcl2==4.3.5"]
+  score: verify/score.py
+```
+
+### 3. Run tests inside Docker (`verify: { image: ... }`)
+
+Use this for non-Python tasks (C#/.NET, Java, TypeScript, etc.). Tests run in a
+prebuilt image so the toolchain is consistent and offline. Build the images once
+with `./tasks/docker/build-images.sh`. Put the authoritative tests in
+`verify/tests/`, then describe how to run them:
+
+```yaml
+verify:
+  image: kirobench-node:20        # prebuilt toolchain image
+  parser: vitest-json             # how to read the test report
+  workdir: src
+  tests_subdir: verify/tests      # hidden tests, copied in at run time
+  test_cmd: 'vitest run --reporter=json --outputFile="$RESULTS_DIR/vitest.json"'
+  network: none
+```
+
+### 4. Grade with the LLM judge (`quality.rubric`)
+
+Use this when you don't want to write any verification code. List plain-English
+criteria and the judge checks each one against the model's output. The score is
+the fraction of criteria met. This requires `judge_model` in your config.
+
+```yaml
+quality:
+  rubric:
+    - "notes_cli.py is created in the workspace"
+    - "'add <text>' appends the note as a new line to notes.txt"
+    - "'search' is case-insensitive"
+```
+
+### Partial credit
+
+Tests and scorers can report a score between 0 and 1 (not just pass/fail) by
+printing this line. The framework reads it from the output:
 
 ```
 KIROBENCH_RESULT: {"score": 0.7, "checkpoints": {...}, "summary": "..."}
 ```
+
+### Setting the pass bar
+
+`functional_pass_threshold` in a `task.yaml` sets the score needed to count as a
+pass (e.g. `0.75` means 75% of criteria/tests). It defaults to a near-perfect
+score, so set it lower for rubric tasks that rarely need 100%.
 
 ## Run the test suite
 
