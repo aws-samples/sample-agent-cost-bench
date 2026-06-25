@@ -1,4 +1,4 @@
-package com.kirobench.ratelimiter;
+package com.agentcostbench.ratelimiter;
 
 import java.util.ArrayDeque;
 import java.util.Deque;

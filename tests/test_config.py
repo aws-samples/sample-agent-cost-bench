@@ -6,12 +6,12 @@ import textwrap
 
 import pytest
 
-from kirobench.config import (
+from agent_cost_bench.config import (
     discover_tasks,
     load_cli_compare_config,
     load_model_compare_config,
 )
-from kirobench.models import CompareMode, CostSource, TaskMode
+from agent_cost_bench.models import CompareMode, CostSource, TaskMode
 
 
 def _write(p, text):
@@ -199,8 +199,8 @@ def test_comparison_label_default_and_legacy_fallback(tmp_path, monkeypatch):
 
 def test_cost_source_inferred_from_binary_name(tmp_path, monkeypatch):
     """cost_source is optional in YAML — inferred from cli_path basename."""
-    from kirobench.targets import _infer_cost_source
-    from kirobench.models import Pricing
+    from agent_cost_bench.targets import _infer_cost_source
+    from agent_cost_bench.models import Pricing
 
     # Binary name → expected cost_source
     cases = [
@@ -225,7 +225,7 @@ def test_cost_source_inferred_from_binary_name(tmp_path, monkeypatch):
 
 def test_explicit_cost_source_wins_over_inference(tmp_path, monkeypatch):
     """An explicit cost_source in YAML always overrides auto-inference."""
-    from kirobench.targets import make_cli_target
+    from agent_cost_bench.targets import make_cli_target
 
     # 'claude' binary but forced to kiro_credits — contrived but proves override works.
     t = make_cli_target({

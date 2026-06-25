@@ -4,7 +4,7 @@ timeout_minutes: 15
 effort: high
 functional_pass_threshold: 0.99
 prompt: |
-  A Java 17 / Maven rate-limiting library (`com.kirobench.ratelimiter`, under
+  A Java 17 / Maven rate-limiting library (`com.agentcostbench.ratelimiter`, under
   `src/`) has several correctness bugs. Fix the implementation so it behaves
   correctly. This is a brownfield task: keep the existing public API
   (`TokenBucket`, `SlidingWindowLimiter`, and the injected `Clock`) and the Maven
@@ -36,13 +36,13 @@ prompt: |
 # Declarative verification: run the authoritative JUnit suite in the prebuilt
 # Java image and score from the Surefire XML reports.
 verify:
-  image: kirobench-java:17
+  image: agent-cost-bench-java:17
   parser: junit-xml
   workdir: src
   tests_subdir: verify/tests
   setup:
-    - mkdir -p "$BUILD/src/src/test/java/com/kirobench/ratelimiter"
-    - cp "$TESTS_RO"/*.java "$BUILD/src/src/test/java/com/kirobench/ratelimiter/"
+    - mkdir -p "$BUILD/src/src/test/java/com/agentcostbench/ratelimiter"
+    - cp "$TESTS_RO"/*.java "$BUILD/src/src/test/java/com/agentcostbench/ratelimiter/"
   test_cmd: >-
     mvn -o -B test -Dmaven.test.failure.ignore=true &&
     cp target/surefire-reports/TEST-*.xml "$RESULTS_DIR/"

@@ -1,5 +1,5 @@
 """
-kirobench — a unified benchmark framework with two modes:
+agent_cost_bench — a unified benchmark framework with two modes:
 
   * cli-compare   — run the SAME model through multiple coding CLIs (Kiro,
                     Claude Code, GitHub Copilot) on the same vibe tasks and

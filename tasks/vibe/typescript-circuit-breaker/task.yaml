@@ -3,7 +3,7 @@ description: "Brownfield TypeScript: fix four bugs in a circuit breaker + retry 
 timeout_minutes: 15
 functional_pass_threshold: 0.99
 prompt: |
-  A TypeScript resilience library (`@kirobench/resilience`, under `src/`) has a
+  A TypeScript resilience library (`@agent-cost-bench/resilience`, under `src/`) has a
   broken circuit breaker and retry policy. Fix the implementation so it behaves
   correctly. This is a brownfield task: keep the existing public API
   (`CircuitBreaker`, `CircuitOpenError`, `retry`, and their option types) and the
@@ -37,7 +37,7 @@ prompt: |
 # Declarative verification: run the authoritative vitest suite in the prebuilt
 # Node image and score from the vitest JSON report.
 verify:
-  image: kirobench-node:20
+  image: agent-cost-bench-node:20
   parser: vitest-json
   workdir: src
   tests_subdir: verify/tests

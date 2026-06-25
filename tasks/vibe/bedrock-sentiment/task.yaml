@@ -55,7 +55,7 @@ repo:
   # Private repos (HTTPS only): authenticate the clone with a personal access token.
   # This repo is public, so these are left commented out. To benchmark against a
   # PRIVATE repo, export a token and uncomment:
-  #   export GITHUB_TOKEN=ghp_xxx   # in your shell, before running kirobench
+  #   export GITHUB_TOKEN=ghp_xxx   # in your shell, before running agent-cost-bench
   # token_env points at the NAME of that env var — NEVER paste the token here
   # (it would be committed to task.yaml). The token is read at runtime and sent
   # via an ephemeral git auth header: it is never written to .git/config and

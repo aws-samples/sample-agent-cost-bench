@@ -78,7 +78,7 @@ exit $ec
             if candidate.exists():
                 tests_host = candidate
 
-        results_dir = Path(tempfile.mkdtemp(prefix="kirobench-verify-"))
+        results_dir = Path(tempfile.mkdtemp(prefix="agent_cost_bench-verify-"))
         timeout = spec.timeout_seconds or min(self.task.timeout_minutes * 60, 600)
 
         cmd = [

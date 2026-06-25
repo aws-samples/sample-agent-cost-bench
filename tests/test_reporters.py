@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from kirobench.models import (
+from agent_cost_bench.models import (
     BenchConfig,
     BenchmarkRun,
     CompareMode,
@@ -14,8 +14,8 @@ from kirobench.models import (
     TaskStatus,
     _utcnow,
 )
-from kirobench.reporter import HTMLReporter, JSONReporter
-from kirobench.targets import make_cli_target, make_kiro_target
+from agent_cost_bench.reporter import HTMLReporter, JSONReporter
+from agent_cost_bench.targets import make_cli_target, make_kiro_target
 
 
 def _cli_run():

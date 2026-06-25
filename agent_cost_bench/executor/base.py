@@ -6,7 +6,7 @@ the target's templates, runs a prompt, parses usage via the target's
 ``cost_source`` (recording USD + native units), retries transient
 CLI/backend/network failures with backoff, and kills the whole process tree on
 timeout/cancel. ``VibeExecutor`` is the one-phase specialisation; spec phases
-live in :mod:`kirobench.executor.spec`.
+live in :mod:`agent_cost_bench.executor.spec`.
 """
 
 from __future__ import annotations

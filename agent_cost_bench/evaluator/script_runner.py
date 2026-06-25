@@ -4,7 +4,7 @@ Centralized local (host) verify runner.
 Replaces the per-task ``verify.sh`` boilerplate: the framework creates an
 isolated virtualenv in the workspace, installs the task's declared ``deps``
 (plus the model's ``requirements.txt`` if present), then runs the task's
-``score`` script, which prints a ``KIROBENCH_RESULT`` marker. The marker is
+``score`` script, which prints a ``AGENT_COST_BENCH_RESULT`` marker. The marker is
 parsed into a graduated FunctionalTestResult by the shared ``build_marker_result``.
 
 Selected when a task's ``verify:`` block has ``runner: local`` (the default when

@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from kirobench.models import (
+from agent_cost_bench.models import (
     BenchConfig,
     CompareMode,
     CostSource,
     Target,
     TaskMode,
 )
-from kirobench.targets import make_cli_target, make_kiro_target, validate_targets
+from agent_cost_bench.targets import make_cli_target, make_kiro_target, validate_targets
 
 
 def test_model_compare_entry_desugars_to_kiro_target():
@@ -172,7 +172,7 @@ def test_effective_workers_legacy_parallel_workers_override():
 
 
 def test_phase_result_timed_out_marker():
-    from kirobench.models import PhaseResult
+    from agent_cost_bench.models import PhaseResult
 
     t = PhaseResult(phase="spec", success=False, duration_seconds=1200.0,
                     error="claude-sonnet-4.6 timed out after 1200s on 'x' (phase: spec)")

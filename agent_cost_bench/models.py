@@ -1,5 +1,5 @@
 """
-Core data models for kirobench.
+Core data models for agent_cost_bench.
 
 This module unifies the two original harnesses (agent-cli-bench's ``RunnerSpec``
 and kiro-bench's ``ModelSpec``) into a single ``Target`` abstraction, plus the
@@ -13,7 +13,7 @@ Design highlights
   and capability flags (``supports_spec`` / ``supports_agents``).
 * ``BenchConfig`` is the single internal config the runner/reporter consume.
   The two YAML schemas (cli-compare / model-compare) desugar into it via the
-  loaders in :mod:`kirobench.config`.
+  loaders in :mod:`agent_cost_bench.config`.
 * ``RunResult`` is a superset result usable by both modes — cost is always
   recorded as both USD and native units (credits / premium requests), and the
   four quality dimensions are present (zero/unused in cli-compare).
@@ -358,7 +358,7 @@ class VerifySpec(BaseModel):
       ``tests_subdir`` (mounted read-only). Used for compiled/multi-language tasks.
     * ``runner: local`` — the framework creates an isolated virtualenv in the
       workspace, installs ``deps`` (plus the model's ``requirements.txt``), and
-      runs the ``score`` script, which prints a ``KIROBENCH_RESULT`` marker. This
+      runs the ``score`` script, which prints a ``AGENT_COST_BENCH_RESULT`` marker. This
       replaces the per-task ``verify.sh`` boilerplate (venv + pip + run scorer).
 
     ``runner`` is inferred when omitted: ``docker`` if ``image`` is set, else
@@ -372,7 +372,7 @@ class VerifySpec(BaseModel):
 
     Local scorer contract: invoked as ``python <score> <workspace> <task_dir>``
     with ``WORKSPACE`` and ``TASK_DIR`` in the environment; it must print a
-    ``KIROBENCH_RESULT: {...}`` line with a 0.0–1.0 ``score``.
+    ``AGENT_COST_BENCH_RESULT: {...}`` line with a 0.0–1.0 ``score``.
     """
 
     model_config = {"protected_namespaces": ()}
@@ -389,7 +389,7 @@ class VerifySpec(BaseModel):
     )
     score: str | None = Field(
         default=None,
-        description="task-relative scorer script that prints a KIROBENCH_RESULT marker (local runner)",
+        description="task-relative scorer script that prints a AGENT_COST_BENCH_RESULT marker (local runner)",
     )
 
     # --- docker runner ---
@@ -515,7 +515,7 @@ class BenchConfig(BaseModel):
     """
     The single internal configuration the runner and reporters consume. The
     cli-compare and model-compare YAML schemas are parsed by the loaders in
-    :mod:`kirobench.config` and desugared into this unified shape.
+    :mod:`agent_cost_bench.config` and desugared into this unified shape.
     """
 
     model_config = {"protected_namespaces": ()}
@@ -597,11 +597,11 @@ class BenchConfig(BaseModel):
     transient_retries: int = Field(default=2, ge=0)
     functional_pass_threshold: float = Field(default=0.99, ge=0.0, le=1.0)
     pass_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
-    workspace_base: str = Field(default="/tmp/kirobench")
+    workspace_base: str = Field(default="/tmp/agent_cost_bench")
 
     # ---- Reporting ----
     output_dir: str = Field(default="results")
-    report_title: str = Field(default="kirobench results")
+    report_title: str = Field(default="agent_cost_bench results")
     open_report: bool = Field(default=True)
 
     # ---- LLM-as-judge (model-compare) ----

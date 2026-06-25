@@ -7,7 +7,7 @@ HTML reporter with two render paths sharing common templates and styling:
   mode breakdown, drill-downs.
 
 Cost columns always show USD and native units (credits / premium requests).
-Charts load Chart.js from a CDN.
+Charts use a bundled Chart.js (no external CDN dependency).
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from ..models import BenchmarkRun, CompareMode, TaskMode, TaskStatus, _clip_tran
 
 
 class HTMLReporter:
-    def __init__(self, output_dir: str | Path, title: str = "kirobench results", mode: CompareMode | None = None):
+    def __init__(self, output_dir: str | Path, title: str = "agent_cost_bench results", mode: CompareMode | None = None):
         self.output_dir = Path(output_dir)
         self.title = title
         self._mode = mode
@@ -319,6 +319,12 @@ class HTMLReporter:
             loader=FileSystemLoader(str(self._template_dir)),
             autoescape=select_autoescape(["html"]),
         )
+        # Inline Chart.js so reports are self-contained (no external CDN).
+        chartjs_path = self._template_dir / "chart.umd.min.js"
+        if chartjs_path.exists():
+            context["chartjs_inline"] = chartjs_path.read_text(encoding="utf-8")
+        else:
+            context["chartjs_inline"] = ""
         return env.get_template(template).render(**context)
 
     @staticmethod

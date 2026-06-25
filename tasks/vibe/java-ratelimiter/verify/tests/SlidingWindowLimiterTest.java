@@ -1,4 +1,4 @@
-package com.kirobench.ratelimiter;
+package com.agentcostbench.ratelimiter;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;

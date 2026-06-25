@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "kirobench"
+name = "agent-cost-bench"
 version = "0.1.0"
 description = "Unified benchmark framework: compare coding CLIs on cost (cli-compare) and models on quality+cost (model-compare)"
 readme = "README.md"
@@ -46,14 +46,14 @@ dev = [
 ]
 
 [project.scripts]
-kirobench = "kirobench.cli:main"
+agent-cost-bench = "agent_cost_bench.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["kirobench*"]
+include = ["agent_cost_bench*"]
 
 [tool.setuptools.package-data]
-kirobench = ["reporter/templates/*.html", "reporter/templates/*.css"]
+agent_cost_bench = ["reporter/templates/*.html", "reporter/templates/*.css", "reporter/templates/*.js"]
 
 [tool.black]
 line-length = 100

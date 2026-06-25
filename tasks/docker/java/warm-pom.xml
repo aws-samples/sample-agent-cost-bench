@@ -2,7 +2,7 @@
   <!-- Warm project: pre-downloads JUnit 5 + Surefire into the image so
        verification can run offline. -->
   <modelVersion>4.0.0</modelVersion>
-  <groupId>com.kirobench</groupId>
+  <groupId>com.agent-cost-bench</groupId>
   <artifactId>warm</artifactId>
   <version>1.0.0</version>
   <packaging>jar</packaging>

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from kirobench.stats import compute_repeat_stats, pass_at_k, wilson_interval
+from agent_cost_bench.stats import compute_repeat_stats, pass_at_k, wilson_interval
 
 
 def test_pass_at_k_humaneval_known_values():

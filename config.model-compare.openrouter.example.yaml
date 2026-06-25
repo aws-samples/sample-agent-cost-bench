@@ -1,0 +1,118 @@
+# model-compare — Kiro CLI + open-weight models via kas-proxy / OpenRouter.
+#
+# Same model-compare mode as config.model-compare.example.yaml, but the Kiro
+# CLI is invoked through the `kiro-cli-plus` wrapper. The wrapper loads the
+# kas-proxy Node shim into the Kiro v3 agent, which transparently redirects
+# inference for opted-in models (matched in kas-proxy's [routing] table) to
+# OpenRouter while every other model passes through to the real Kiro backend
+# untouched. Result: one benchmark run that compares Kiro-served frontier
+# models against open-weight models served via OpenRouter, all through the
+# same agent, same CLI args, same tools.
+#
+#   agent-cost-bench model-compare run config.model-compare.openrouter.example.yaml
+#
+# Prerequisites (one-time):
+#   1. Install + start kas-proxy:
+#        cd ../kas-proxy
+#        uv run kas-proxy start --daemon
+#   2. Put `kiro-cli-plus` on your PATH (or set kiro_cli_path to its absolute
+#      path). It lives at <kas-proxy-repo>/kiro-cli-plus.
+#   3. Configure kas-proxy's ~/.kas-proxy/config.toml [routing] table to map
+#      every Kiro model id you want routed to its OpenRouter slug, e.g.:
+#        [routing]
+#        "glm-5"               = "z-ai/glm-5.2"
+#        "deepseek-3.2"        = "deepseek/deepseek-v4-pro"
+#        "minimax-m2.5"        = "minimax/minimax-m3"
+#        "kimi-k2.5"           = "moonshotai/kimi-k2.7-code"
+#        "qwen3-coder-480b"    = "qwen/qwen3.7-plus"
+#      Model ids NOT listed here reach the real Kiro backend (passthrough).
+#
+# Cost capture:
+#   * Kiro-passthrough models — costs captured via kas-proxy's metrics.jsonl
+#     (the proxy stamps each per-turn record with the X-Kas-Run-Id our shim
+#     attaches; the harness looks up the record and reports its cost_usd /
+#     kiro_credits).
+#   * OpenRouter-routed models — same path, same authoritative source. The
+#     proxy records OpenRouter's billed cost_usd (from usage:{include:true})
+#     and the harness reads it back.
+#   * Both paths require kas_proxy_metrics: true below.
+
+# Use the wrapper. It enforces `--v3` (the proxy depends on the v3 agent's
+# bundled Node process) and exports NODE_OPTIONS / NODE_EXTRA_CA_CERTS /
+# KAS_PROXY_ENDPOINT so the shim is loaded into Kiro automatically. If your
+# wrapper is not on PATH, give an absolute path here.
+kiro_cli_path: /Users/govindhi/Kiro-2.0/Eval/kas-proxy/kiro-cli-plus
+kiro_api_key: ${KIRO_API_KEY:-}   # optional; falls back to the CLI login session
+effort: high   # default for tasks that don't set their own effort in task.yaml
+
+# Models to benchmark. Open-weight ids (e.g. glm-5, deepseek-3.2) are routed
+# to OpenRouter via kas-proxy; the Anthropic ids are served by the real Kiro
+# backend. Both groups run through the same Kiro CLI / agent loop / tools.
+#
+# Important: an id must exist in Kiro's live `ListAvailableModels` for the CLI
+# to accept it (the routing key is read from the request body after the model
+# is selected). Use ids the CLI's model picker would show.
+models:
+  # --- Kiro-served (passthrough) ---
+  - claude-opus-4.8
+  - claude-sonnet-4.6
+
+  # --- Open-weight (routed to OpenRouter via kas-proxy [routing]) ---
+  - id: glm-5
+    display_name: "GLM-5 (z-ai/glm-5.2)"
+  - id: deepseek-3.2
+    display_name: "DeepSeek V4 (deepseek/deepseek-v4-pro)"
+  - id: minimax-m2.5
+    display_name: "MiniMax 3 (minimax/minimax-m3)"
+  - id: kimi-k2.5
+    display_name: "Kimi K2.7 (moonshotai/kimi-k2.7-code)"
+  - id: qwen3-coder-480b
+    display_name: "Qwen3 3.7 Plus (qwen/qwen3.7-plus)"
+
+# USD value of one Kiro credit (passthrough cost only).
+pricing:
+  usd_per_credit: 0.04
+
+# Use the PTY path for vibe tasks. kiro-cli v3 (forced by kiro-cli-plus)
+# does not exit cleanly in headless (--no-interactive) mode — it keeps its
+# Node agent alive on a keep-alive socket. Under a PTY the master-close
+# signals EOF to the child, so the process exits naturally when the task
+# is done, eliminating the timeout/hang issue.
+vibe_use_pty: true
+# When true, every Kiro target's cost comes from kas-proxy's metrics.jsonl
+# (correlated by a per-turn X-Kas-Run-Id header set by the harness as the
+# KAS_RUN_ID env var on each subprocess). This captures cost for BOTH
+# Kiro-passthrough turns and OpenRouter-routed turns through the same
+# authoritative source — no per-target cost_source juggling needed.
+kas_proxy_metrics: true
+# kas_proxy_metrics_file: ~/.kas-proxy/metrics.jsonl   # default
+# kas_proxy_metrics_timeout_seconds: 5.0                # how long to wait for
+                                                        # the proxy to flush
+                                                        # the per-turn record
+
+# LLM-as-judge for rubric / spec-quality tasks. Routes through the Kiro CLI;
+# pin to a Kiro-passthrough model so judging itself uses a stable backend.
+judge_model: claude-opus-4.8
+judge_weight: 0.6
+
+# Task discovery
+tasks_dir: tasks 
+task_ids: 
+modes: ["vibe"]   # or ["vibe", "spec-driven"]
+
+# Execution
+# `per_target` keeps things conservative for the first OpenRouter run — one
+# concurrent job per enabled model. Bump to `full` later if your machine and
+# OpenRouter quota can handle parallel turns for the same model.
+concurrency: per_target
+timeout_minutes: 30
+repeats: 1
+transient_retries: 2
+pass_threshold: 0.5
+functional_pass_threshold: 0.99
+workspace_base: /tmp/agent-cost-bench-model-compare-openrouter
+
+# Reporting
+output_dir: results
+report_title: "Benchmark analysis of Kiro + open-weight models via kas-proxy"
+open_report: true

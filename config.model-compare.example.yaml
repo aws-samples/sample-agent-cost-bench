@@ -2,7 +2,7 @@
 # spec-driven tasks, comparing quality (functional + spec quality + task
 # completion + steering, optional LLM judge) alongside cost (credits + USD).
 #
-#   kirobench model-compare run config.model-compare.example.yaml
+#   agent-cost-bench model-compare run config.model-compare.example.yaml
 
 kiro_cli_path: kiro-cli
 kiro_api_key: ${KIRO_API_KEY:-}   # optional; falls back to the CLI login session
@@ -78,7 +78,7 @@ repeats: 1
 transient_retries: 2
 pass_threshold: 0.5            # used only for tasks with no functional test
 functional_pass_threshold: 0.99
-workspace_base: /tmp/kirobench-model-compare
+workspace_base: /tmp/agent-cost-bench-model-compare
 
 # Reporting
 output_dir: results

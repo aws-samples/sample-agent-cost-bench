@@ -55,6 +55,13 @@ _M = re.compile(r"(\d+(?:\.\d+)?)\s*m", re.IGNORECASE)
 _S = re.compile(r"(\d+(?:\.\d+)?)\s*s", re.IGNORECASE)
 
 
+def _safe_int(val) -> int | None:
+    """Convert a value to int if it's numeric, else None."""
+    if isinstance(val, (int, float)):
+        return int(val)
+    return None
+
+
 def _to_seconds(token: str) -> float | None:
     token = token.strip()
     if not token:
@@ -158,7 +165,14 @@ def _find_json_objects(text: str) -> list[dict]:
 
 
 def parse_claude_usage(stdout: str, stderr: str, pricing: Pricing) -> Usage:
-    """Parse `claude -p --output-format json`."""
+    """Parse `claude -p --output-format json`.
+
+    Claude Code reports cached tokens separately:
+      - input_tokens: non-cached input
+      - cache_creation_input_tokens: tokens written to cache this turn
+      - cache_read_input_tokens: tokens read from cache
+    Total input = all three summed.
+    """
     objs = _find_json_objects(stdout) or _find_json_objects(stderr)
     result_obj = None
     for o in objs:
@@ -173,12 +187,20 @@ def parse_claude_usage(stdout: str, stderr: str, pricing: Pricing) -> Usage:
     duration_ms = result_obj.get("duration_ms")
     seconds = (duration_ms / 1000.0) if isinstance(duration_ms, (int, float)) else None
     usage = result_obj.get("usage", {}) or {}
-    in_tok = usage.get("input_tokens")
-    out_tok = usage.get("output_tokens")
+
+    # Sum all input token buckets (non-cached + cache creation + cache read).
+    in_tok = _safe_int(usage.get("input_tokens"))
+    cache_create = _safe_int(usage.get("cache_creation_input_tokens"))
+    cache_read = _safe_int(usage.get("cache_read_input_tokens"))
+    total_in = None
+    if any(v is not None for v in (in_tok, cache_create, cache_read)):
+        total_in = (in_tok or 0) + (cache_create or 0) + (cache_read or 0)
+
+    out_tok = _safe_int(usage.get("output_tokens"))
     return Usage(
         cost_usd=float(cost) if isinstance(cost, (int, float)) else None,
-        input_tokens=int(in_tok) if isinstance(in_tok, (int, float)) else None,
-        output_tokens=int(out_tok) if isinstance(out_tok, (int, float)) else None,
+        input_tokens=total_in,
+        output_tokens=out_tok,
         seconds=seconds,
     )
 
@@ -399,7 +421,7 @@ def parse_kas_proxy_metrics_usage(
     Returns an empty ``Usage()`` when no run_id is supplied (e.g. the proxy
     isn't in use) or no matching record is found within the timeout.
 
-    Field mapping (kas-proxy metrics → kirobench Usage):
+    Field mapping (kas-proxy metrics → agent_cost_bench Usage):
       cost_usd          -> Usage.cost_usd            (real billed cost)
       input_tokens      -> Usage.input_tokens
       output_tokens     -> Usage.output_tokens

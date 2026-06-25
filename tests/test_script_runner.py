@@ -10,8 +10,8 @@ import sys
 
 import pytest
 
-from kirobench.evaluator.script_runner import ScriptVerifyRunner
-from kirobench.models import FunctionalTestResult, TaskConfig, TaskMode, VerifySpec
+from agent_cost_bench.evaluator.script_runner import ScriptVerifyRunner
+from agent_cost_bench.models import FunctionalTestResult, TaskConfig, TaskMode, VerifySpec
 
 
 def _local_task(tmp_path, score_body: str, *, score_rel: str = "verify/score.py",
@@ -38,7 +38,7 @@ def _skip_venv(runner: ScriptVerifyRunner, monkeypatch) -> None:
 async def test_local_runner_parses_graduated_marker(tmp_path, monkeypatch):
     score = (
         "import json\n"
-        "print('KIROBENCH_RESULT: ' + json.dumps({'score': 0.5, 'summary': 'half'}))\n"
+        "print('AGENT_COST_BENCH_RESULT: ' + json.dumps({'score': 0.5, 'summary': 'half'}))\n"
     )
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -56,7 +56,7 @@ async def test_local_runner_parses_graduated_marker(tmp_path, monkeypatch):
 async def test_local_runner_full_pass(tmp_path, monkeypatch):
     score = (
         "import json\n"
-        "print('KIROBENCH_RESULT: ' + json.dumps({'score': 1.0, 'summary': 'ok'}))\n"
+        "print('AGENT_COST_BENCH_RESULT: ' + json.dumps({'score': 1.0, 'summary': 'ok'}))\n"
     )
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -76,7 +76,7 @@ async def test_local_runner_passes_workspace_and_task_dir(tmp_path, monkeypatch)
         "from pathlib import Path\n"
         "ws = Path(sys.argv[1]); td = Path(sys.argv[2])\n"
         "ok = (ws / 'solution.py').exists() and td.is_dir() and 'WORKSPACE' in __import__('os').environ\n"
-        "print('KIROBENCH_RESULT: ' + json.dumps({'score': 1.0 if ok else 0.0, 'summary': str(ok)}))\n"
+        "print('AGENT_COST_BENCH_RESULT: ' + json.dumps({'score': 1.0 if ok else 0.0, 'summary': str(ok)}))\n"
     )
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -104,7 +104,7 @@ async def test_local_runner_missing_score_script_is_harness_error(tmp_path, monk
 
 @pytest.mark.asyncio
 async def test_local_runner_venv_failure_is_harness_error(tmp_path, monkeypatch):
-    score = "print('KIROBENCH_RESULT: {\"score\": 1.0}')\n"
+    score = "print('AGENT_COST_BENCH_RESULT: {\"score\": 1.0}')\n"
     ws = tmp_path / "ws"
     ws.mkdir()
     runner = ScriptVerifyRunner(_local_task(tmp_path, score), ws)
@@ -120,8 +120,8 @@ async def test_local_runner_venv_failure_is_harness_error(tmp_path, monkeypatch)
 
 @pytest.mark.asyncio
 async def test_functional_evaluator_routes_to_script_runner(tmp_path, monkeypatch):
-    import kirobench.evaluator.script_runner as sr_mod
-    from kirobench.evaluator.functional import FunctionalEvaluator
+    import agent_cost_bench.evaluator.script_runner as sr_mod
+    from agent_cost_bench.evaluator.functional import FunctionalEvaluator
 
     sentinel = FunctionalTestResult(passed=True, score=1.0, summary="from local runner")
 
@@ -145,8 +145,8 @@ async def test_functional_evaluator_routes_to_script_runner(tmp_path, monkeypatc
 @pytest.mark.asyncio
 async def test_functional_evaluator_routes_to_pytest_runner(tmp_path, monkeypatch):
     """runner:pytest routes to PytestSuiteRunner (with extra_deps from verify.deps)."""
-    import kirobench.evaluator.pytest_runner as pr_mod
-    from kirobench.evaluator.functional import FunctionalEvaluator
+    import agent_cost_bench.evaluator.pytest_runner as pr_mod
+    from agent_cost_bench.evaluator.functional import FunctionalEvaluator
 
     sentinel = FunctionalTestResult(passed=True, score=1.0, summary="from pytest runner")
     captured: dict = {}
@@ -177,7 +177,7 @@ async def test_functional_evaluator_routes_to_pytest_runner(tmp_path, monkeypatc
 @pytest.mark.asyncio
 async def test_pytest_runner_missing_tests_is_harness_error(tmp_path):
     """runner:pytest with no test_*.py in verify/ produces a harness_error."""
-    from kirobench.evaluator.functional import FunctionalEvaluator
+    from agent_cost_bench.evaluator.functional import FunctionalEvaluator
 
     tc = TaskConfig(id="t", mode=TaskMode.VIBE, description="d")
     tc.verify = VerifySpec(runner="pytest", deps=[])

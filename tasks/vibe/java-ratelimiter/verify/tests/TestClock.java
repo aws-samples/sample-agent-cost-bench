@@ -1,4 +1,4 @@
-package com.kirobench.ratelimiter;
+package com.agentcostbench.ratelimiter;
 
 /** A controllable clock for deterministic rate-limiter tests. */
 final class TestClock implements Clock {

@@ -10,7 +10,7 @@ Config loaders: two tailored YAML schemas desugar into one unified BenchConfig.
 
 Both expand ``${VAR}`` / ``${VAR:-default}`` placeholders and produce a
 ``BenchConfig`` whose ``targets`` are built by the desugaring helpers in
-:mod:`kirobench.targets`.
+:mod:`agent_cost_bench.targets`.
 
 ``discover_tasks`` walks the tasks directory, applies mode/task-id filters, and
 skips unparseable or mode-incompatible tasks gracefully.
@@ -122,7 +122,7 @@ def load_cli_compare_config(config_path: str | Path) -> BenchConfig:
         **_passthrough(raw),
     )
     # cli-compare is vibe-only.
-    kwargs.setdefault("report_title", "kirobench cli-compare")
+    kwargs.setdefault("report_title", "agent_cost_bench cli-compare")
     kwargs["modes"] = [TaskMode.VIBE]
     try:
         return BenchConfig(**kwargs)
@@ -191,7 +191,7 @@ def load_model_compare_config(config_path: str | Path) -> BenchConfig:
     )
     if "judge_weight" in raw:
         kwargs["judge_weight"] = raw["judge_weight"]
-    kwargs.setdefault("report_title", "kirobench model-compare")
+    kwargs.setdefault("report_title", "agent_cost_bench model-compare")
     try:
         return BenchConfig(**kwargs)
     except ValidationError as e:

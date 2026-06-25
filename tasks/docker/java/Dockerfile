@@ -1,4 +1,4 @@
-# kirobench Java verification image — Amazon Corretto 17 + Maven + warmed ~/.m2.
+# agent-cost-bench Java verification image — Amazon Corretto 17 + Maven + warmed ~/.m2.
 # Base: Amazon Corretto JDK 17 from the Amazon ECR Public Gallery (no Docker
 # Hub rate limits). Maven is installed on top from the Amazon Linux package repo.
 FROM public.ecr.aws/amazoncorretto/amazoncorretto:17-al2023

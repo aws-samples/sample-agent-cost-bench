@@ -6,9 +6,9 @@ import asyncio
 
 import pytest
 
-from kirobench.executor import SpecDrivenExecutor, VibeExecutor
-from kirobench.executor.spec import SpecCapabilityError
-from kirobench.models import BenchConfig, CompareMode, CostSource
+from agent_cost_bench.executor import SpecDrivenExecutor, VibeExecutor
+from agent_cost_bench.executor.spec import SpecCapabilityError
+from agent_cost_bench.models import BenchConfig, CompareMode, CostSource
 from tests.conftest import mock_target
 
 

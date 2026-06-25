@@ -1,7 +1,7 @@
 """
 Harness tests for task-015-terraform-serverless-spa.
 
-Runs inside the kirobench-terraform image, in the directory holding the model's
+Runs inside the agent-cost-bench-terraform image, in the directory holding the model's
 *.tf files (terraform init has already run offline against the pre-warmed AWS
 provider mirror). Grading combines:
 

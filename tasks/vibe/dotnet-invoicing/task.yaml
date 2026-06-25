@@ -35,7 +35,7 @@ prompt: |
 # Declarative verification: run the authoritative xUnit suite in the prebuilt
 # .NET image and score from the .trx report. No verify.sh needed.
 verify:
-  image: kirobench-dotnet:8.0
+  image: agent-cost-bench-dotnet:8.0
   parser: trx
   workdir: ""
   tests_subdir: verify/tests

@@ -1,4 +1,4 @@
-# kirobench Helm verification image — Helm CLI + Python (pytest/PyYAML).
+# agent-cost-bench Helm verification image — Helm CLI + Python (pytest/PyYAML).
 #
 # Helm template rendering is fully local (no network, no Tiller, no cluster),
 # so this image runs with --network=none at verify time. The Helm binary is the

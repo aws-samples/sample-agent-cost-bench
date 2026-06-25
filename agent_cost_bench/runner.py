@@ -111,7 +111,7 @@ class BenchmarkRunner:
             else ""
         )
         console.print(
-            f"\nkirobench {self.config.mode.value}  run {self.run_id}\n"
+            f"\nagent_cost_bench {self.config.mode.value}  run {self.run_id}\n"
             f"{header_label}"
             f"  Tasks: {len(tasks)}  ×  {unit}: {len(targets)}{repeat_note}  =  {total} runs\n"
             f"  {unit}: {', '.join(t.label for t in targets)}\n"

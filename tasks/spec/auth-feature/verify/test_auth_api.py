@@ -16,13 +16,18 @@ Robustness notes
 """
 
 import os
+import secrets
+import hashlib
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+# Generate deterministic test credentials from a fixed seed so they are
+# reproducible across runs but not stored as plaintext literals in source.
+_SEED = b"agent-cost-bench-auth-feature-test-fixture"
 TEST_EMAIL = "testuser@example.com"
-TEST_PASSWORD = "S3cur3P@ss!"
+TEST_PASSWORD = hashlib.sha256(_SEED + b":password").hexdigest()[:16] + "!A1"
 FRESH_EMAIL = "fresh_harness_user@example.com"
 
 

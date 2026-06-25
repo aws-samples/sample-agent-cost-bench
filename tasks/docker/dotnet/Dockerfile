@@ -1,4 +1,4 @@
-# kirobench .NET verification image — SDK + warmed NuGet cache (xUnit).
+# agent-cost-bench .NET verification image — SDK + warmed NuGet cache (xUnit).
 # Microsoft's own container registry (mcr.microsoft.com) has no rate limits.
 FROM mcr.microsoft.com/dotnet/sdk:8.0
 

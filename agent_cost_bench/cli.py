@@ -1,15 +1,15 @@
 """
-kirobench CLI entry point.
+agent_cost_bench CLI entry point.
 
 Two command groups share one execution/reporting core:
 
-  kirobench cli-compare   run|validate|list-tasks  config.yaml ...
-  kirobench model-compare run|validate|list-tasks  config.yaml ...
+  agent_cost_bench cli-compare   run|validate|list-tasks  config.yaml ...
+  agent_cost_bench model-compare run|validate|list-tasks  config.yaml ...
 
 Plus shared top-level commands:
 
-  kirobench report   results/<run>.json
-  kirobench new-task TASK_ID --mode vibe|spec-driven
+  agent_cost_bench report   results/<run>.json
+  agent_cost_bench new-task TASK_ID --mode vibe|spec-driven
 """
 
 from __future__ import annotations
@@ -55,9 +55,9 @@ def test_todo_implement_me():
 
 
 @click.group()
-@click.version_option(package_name="kirobench")
+@click.version_option(package_name="agent_cost_bench")
 def main():
-    """kirobench — unified CLI/model benchmark framework (cli-compare + model-compare)."""
+    """agent_cost_bench — unified CLI/model benchmark framework (cli-compare + model-compare)."""
     pass
 
 
@@ -357,7 +357,7 @@ def report(results_json, output_dir, no_open):
             pass
 
     out = Path(output_dir)
-    title = f"kirobench {mode.value} (report) — {run_obj.run_id}"
+    title = f"agent_cost_bench {mode.value} (report) — {run_obj.run_id}"
     html_path = HTMLReporter(out, title=title, mode=mode).write(run_obj)
     console.print(f"[bold green]HTML report → {html_path}[/bold green]")
     console.print(f"  {len(run_obj.results)} result(s) loaded")

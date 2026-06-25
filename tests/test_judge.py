@@ -8,9 +8,9 @@ made the long grading prompt land as an "unexpected argument").
 
 from __future__ import annotations
 
-from kirobench.judge import LLMJudge, _is_kiro_plus_wrapper
-from kirobench.models import BenchConfig, CompareMode
-from kirobench.targets import make_kiro_target
+from agent_cost_bench.judge import LLMJudge, _is_kiro_plus_wrapper
+from agent_cost_bench.models import BenchConfig, CompareMode
+from agent_cost_bench.targets import make_kiro_target
 
 
 def _cfg(**kw) -> BenchConfig:

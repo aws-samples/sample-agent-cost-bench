@@ -21,7 +21,7 @@ prompt: |
   - Do NOT run `terraform apply`. Only create the files. You may run `terraform validate` to check your work.
 
 # Centralized local verification: the framework creates an isolated venv,
-# installs `deps`, and runs `score` (which prints a KIROBENCH_RESULT marker).
+# installs `deps`, and runs `score` (which prints a AGENT_COST_BENCH_RESULT marker).
 verify:
   runner: pytest
   deps: ["python-hcl2==4.3.5"]

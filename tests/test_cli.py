@@ -6,7 +6,7 @@ import sys
 
 from click.testing import CliRunner
 
-from kirobench.cli import main
+from agent_cost_bench.cli import main
 from tests.conftest import MOCK_CLI
 
 
@@ -17,8 +17,8 @@ def _vibe_tasks(root):
     v = td / "verify.sh"
     v.write_text(
         "#!/bin/bash\n"
-        'if [ -f "$WORKSPACE/solution.py" ]; then echo \'KIROBENCH_RESULT: {"score":1.0}\'; exit 0;'
-        ' else echo \'KIROBENCH_RESULT: {"score":0.0}\'; exit 1; fi\n'
+        'if [ -f "$WORKSPACE/solution.py" ]; then echo \'AGENT_COST_BENCH_RESULT: {"score":1.0}\'; exit 0;'
+        ' else echo \'AGENT_COST_BENCH_RESULT: {"score":0.0}\'; exit 1; fi\n'
     )
     v.chmod(0o755)
     return str(root / "tasks")

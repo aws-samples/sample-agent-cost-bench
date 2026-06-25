@@ -6,8 +6,8 @@ import textwrap
 
 import pytest
 
-from kirobench.config import _load_task_config
-from kirobench.models import FunctionalTestResult, TaskConfig, TaskMode
+from agent_cost_bench.config import _load_task_config
+from agent_cost_bench.models import FunctionalTestResult, TaskConfig, TaskMode
 
 
 def test_task_config_parses_verify_block(tmp_path):
@@ -17,7 +17,7 @@ def test_task_config_parses_verify_block(tmp_path):
         id: t-verify
         mode: vibe
         verify:
-          image: kirobench-node:20
+          image: agent_cost_bench-node:20
           parser: vitest-json
           workdir: src
           tests_subdir: verify/tests
@@ -28,7 +28,7 @@ def test_task_config_parses_verify_block(tmp_path):
     """))
     tc = _load_task_config(d / "task.yaml")
     assert tc.verify is not None
-    assert tc.verify.image == "kirobench-node:20"
+    assert tc.verify.image == "agent_cost_bench-node:20"
     assert tc.verify.parser == "vitest-json"
     assert tc.verify.setup == ['mkdir -p "$BUILD/src/tests"']
     assert tc.verify.network == "none"
@@ -36,8 +36,8 @@ def test_task_config_parses_verify_block(tmp_path):
 
 @pytest.mark.asyncio
 async def test_functional_evaluator_routes_to_docker_runner(tmp_path, monkeypatch):
-    from kirobench.evaluator.functional import FunctionalEvaluator
-    import kirobench.verify as verify_pkg
+    from agent_cost_bench.evaluator.functional import FunctionalEvaluator
+    import agent_cost_bench.verify as verify_pkg
 
     sentinel = FunctionalTestResult(passed=True, score=1.0, summary="from docker runner")
 
@@ -50,7 +50,7 @@ async def test_functional_evaluator_routes_to_docker_runner(tmp_path, monkeypatc
 
     monkeypatch.setattr(verify_pkg, "DockerVerifyRunner", FakeRunner)
 
-    from kirobench.models import VerifySpec
+    from agent_cost_bench.models import VerifySpec
 
     tc = TaskConfig(id="t", mode=TaskMode.VIBE, description="d")
     tc.verify = VerifySpec(image="img", test_cmd="run", parser="exit-code")
@@ -61,9 +61,9 @@ async def test_functional_evaluator_routes_to_docker_runner(tmp_path, monkeypatc
 
 
 def test_required_docker_images_uses_verify_image():
-    from kirobench.models import VerifySpec
-    from kirobench.preflight import required_docker_images
+    from agent_cost_bench.models import VerifySpec
+    from agent_cost_bench.preflight import required_docker_images
 
     t = TaskConfig(id="t", mode=TaskMode.VIBE, description="d")
-    t.verify = VerifySpec(image="kirobench-dotnet:8.0", test_cmd="x", parser="trx")
-    assert required_docker_images([t]) == {"kirobench-dotnet:8.0"}
+    t.verify = VerifySpec(image="agent_cost_bench-dotnet:8.0", test_cmd="x", parser="trx")
+    assert required_docker_images([t]) == {"agent_cost_bench-dotnet:8.0"}

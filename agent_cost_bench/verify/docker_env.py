@@ -103,7 +103,7 @@ def diagnostic(image: str) -> str:
             return f"<error: {e}>"
 
     imgs = _run(["docker", "image", "ls", "--format", "{{.Repository}}:{{.Tag}}"])
-    kb = [ln for ln in imgs.splitlines() if "kirobench" in ln]
+    kb = [ln for ln in imgs.splitlines() if "agent_cost_bench" in ln]
     return "\n".join([
         f"docker on PATH : {_run(['which', 'docker'])}",
         f"HOME           : {os.environ.get('HOME', '<unset>')}",
@@ -111,5 +111,5 @@ def diagnostic(image: str) -> str:
         f"DOCKER_CONTEXT : {os.environ.get('DOCKER_CONTEXT', '<unset>')}",
         f"current context: {_run(['docker', 'context', 'show'])}",
         f"image ls -q '{image}': {_run(['docker', 'image', 'ls', '-q', image]) or '<empty>'}",
-        f"kirobench images: {', '.join(kb) or '<none>'}",
+        f"agent_cost_bench images: {', '.join(kb) or '<none>'}",
     ])

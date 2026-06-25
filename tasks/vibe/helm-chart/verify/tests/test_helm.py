@@ -1,7 +1,7 @@
 """
 Harness tests for helm-chart task.
 
-Runs inside the kirobench-helm image after `helm lint` and `helm template` have
+Runs inside the agent-cost-bench-helm image after `helm lint` and `helm template` have
 already executed. The rendered multi-document YAML is at $RENDERED. Tests parse
 it and verify structural requirements.
 

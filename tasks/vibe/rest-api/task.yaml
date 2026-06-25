@@ -22,7 +22,7 @@ prompt: |
 
 # Centralized local verification: framework-managed venv + deps + scorer.
 # score.py runs the harness pytest suite (verify/test_todo_api.py) against the
-# model's app and emits a graduated KIROBENCH_RESULT marker.
+# model's app and emits a graduated AGENT_COST_BENCH_RESULT marker.
 verify:
   runner: pytest
   deps:

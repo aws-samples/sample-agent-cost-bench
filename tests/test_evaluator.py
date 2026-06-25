@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from kirobench.evaluator import (
+from agent_cost_bench.evaluator import (
     FunctionalEvaluator,
     SpecQualityEvaluator,
     SteeringAdherenceEvaluator,
     TaskCompletionEvaluator,
 )
-from kirobench.models import BenchConfig, CompareMode, ScoringWeights, TaskConfig, TaskMode
-from kirobench.targets import make_kiro_target
+from agent_cost_bench.models import BenchConfig, CompareMode, ScoringWeights, TaskConfig, TaskMode
+from agent_cost_bench.targets import make_kiro_target
 
 
 def _task(tmp_path, mode=TaskMode.VIBE):
@@ -28,7 +28,7 @@ def _write_verify(tmp_path, body):
 
 @pytest.mark.asyncio
 async def test_graduated_marker_parsed(tmp_path):
-    _write_verify(tmp_path, 'echo \'KIROBENCH_RESULT: {"score": 0.7, "summary": "partial"}\'\nexit 1\n')
+    _write_verify(tmp_path, 'echo \'AGENT_COST_BENCH_RESULT: {"score": 0.7, "summary": "partial"}\'\nexit 1\n')
     res = await FunctionalEvaluator(_task(tmp_path), tmp_path).evaluate()
     assert abs(res.score - 0.7) < 1e-9
     assert res.passed is False  # graduated <1.0 does not pass the hard gate
@@ -112,7 +112,7 @@ async def test_steering_not_applicable_without_docs(tmp_path):
 
 
 def test_resolve_spec_dir_ignores_empty_preferred(tmp_path):
-    from kirobench.evaluator.spec_paths import resolve_spec_dir
+    from agent_cost_bench.evaluator.spec_paths import resolve_spec_dir
 
     specs = tmp_path / ".kiro" / "specs"
     # Harness pre-created an EMPTY dir named after the task id.
@@ -126,7 +126,7 @@ def test_resolve_spec_dir_ignores_empty_preferred(tmp_path):
 
 
 def test_resolve_spec_dir_prefers_seeded_task_id(tmp_path):
-    from kirobench.evaluator.spec_paths import resolve_spec_dir
+    from agent_cost_bench.evaluator.spec_paths import resolve_spec_dir
 
     specs = tmp_path / ".kiro" / "specs"
     (specs / "task-101").mkdir(parents=True)

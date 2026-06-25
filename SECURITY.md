@@ -1,11 +1,11 @@
 # Security
 
-kirobench benchmarks coding agents by **running them and the code they
+agent-cost-bench benchmarks coding agents by **running them and the code they
 produce**. Please read this before running it outside a throwaway environment.
 
 ## Threat model — read this first
 
-kirobench is not a sandbox. By design it executes code that you should treat as
+agent-cost-bench is not a sandbox. By design it executes code that you should treat as
 untrusted:
 
 - **AI-generated code runs on your machine.** Every task asks a model (via a
@@ -24,7 +24,7 @@ untrusted:
 - **`verify:` blocks and verify scripts are trusted task-author input.** They are
   executed as written. Only run task suites you trust, or author your own.
 
-In short: **running kirobench can result in arbitrary code execution as your
+In short: **running agent-cost-bench can result in arbitrary code execution as your
 user.** This is inherent to benchmarking autonomous coding agents.
 
 ## Running safely

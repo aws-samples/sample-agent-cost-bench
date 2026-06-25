@@ -1,5 +1,5 @@
 {
-  "name": "@kirobench/resilience",
+  "name": "@agent-cost-bench/resilience",
   "version": "1.0.0",
   "private": true,
   "type": "module",

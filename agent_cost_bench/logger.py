@@ -1,5 +1,5 @@
 """
-RunLogger — per-run, human-readable file logger for kirobench.
+RunLogger — per-run, human-readable file logger for agent_cost_bench.
 
 One log file per benchmark run: ``<output_dir>/<run_id>.log``. Each CLI
 interaction is written as a clearly delimited block. All writes are serialised
@@ -56,7 +56,7 @@ class RunLogger:
         self._lock = asyncio.Lock()
         self._fh = self._path.open("a", encoding="utf-8", buffering=1)
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        self._fh.write("kirobench run log\n")
+        self._fh.write("agent_cost_bench run log\n")
         self._fh.write(f"run_id : {run_id}\n")
         self._fh.write(f"started: {now}\n")
         self._fh.write("=" * _WIDE + "\n\n")

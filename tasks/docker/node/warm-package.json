@@ -1,5 +1,5 @@
 {
-  "name": "kirobench-warm",
+  "name": "agent-cost-bench-warm",
   "private": true,
   "description": "Warm project: bakes vitest + typescript into the image's node_modules so TS verification runs offline.",
   "devDependencies": {

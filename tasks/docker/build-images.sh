@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the kirobench verification images (one per language) with warmed
+# Build the agent-cost-bench verification images (one per language) with warmed
 # dependency caches so per-task verification can run offline (--network=none).
 #
 #   ./tasks/docker/build-images.sh            # build all
@@ -25,11 +25,11 @@ build() {
 targets=("${@:-all}")
 want() { [[ "${targets[0]}" == "all" ]] || printf '%s\n' "${targets[@]}" | grep -qx "$1"; }
 
-want dotnet && build dotnet "kirobench-dotnet:8.0"
-want java   && build java   "kirobench-java:17"
-want node   && build node   "kirobench-node:20"
-want terraform && build terraform "kirobench-terraform:1.9"
-want helm   && build helm   "kirobench-helm:3.16"
+want dotnet && build dotnet "agent-cost-bench-dotnet:8.0"
+want java   && build java   "agent-cost-bench-java:17"
+want node   && build node   "agent-cost-bench-node:20"
+want terraform && build terraform "agent-cost-bench-terraform:1.9"
+want helm   && build helm   "agent-cost-bench-helm:3.16"
 
 echo "Done. Images:"
-docker images | grep -E 'kirobench-(dotnet|java|node|terraform|helm)' || true
+docker images | grep -E 'agent-cost-bench-(dotnet|java|node|terraform|helm)' || true

@@ -6,7 +6,7 @@ Scoring modes:
 
 1. **Graduated (preferred).** The verify script prints one line::
 
-       KIROBENCH_RESULT: {"score": 0.7, "checkpoints": {...}, "summary": "..."}
+       AGENT_COST_BENCH_RESULT: {"score": 0.7, "checkpoints": {...}, "summary": "..."}
 
    ``score`` (0.0–1.0) becomes the functional score; checkpoints + summary are
    surfaced in the report. Legacy markers ``KIRO_BENCH_RESULT`` and
@@ -31,23 +31,23 @@ from pathlib import Path
 from ..models import FunctionalTestResult, TaskConfig
 
 # Markers the verify script may print (current + legacy from both harnesses).
-_RESULT_MARKERS = ("KIROBENCH_RESULT:", "KIRO_BENCH_RESULT:", "CLI_BENCH_RESULT:")
+_RESULT_MARKERS = ("AGENT_COST_BENCH_RESULT:", "KIRO_BENCH_RESULT:", "CLI_BENCH_RESULT:")
 _RESULT_RE = re.compile(
-    r"^(?:KIROBENCH_RESULT|KIRO_BENCH_RESULT|CLI_BENCH_RESULT):\s*(\{.*\})\s*$",
+    r"^(?:AGENT_COST_BENCH_RESULT|KIRO_BENCH_RESULT|CLI_BENCH_RESULT):\s*(\{.*\})\s*$",
     re.MULTILINE,
 )
 
 _STANDARD_ENV = {
-    "JWT_SECRET_KEY": "kirobench-test-secret-key-not-for-production",
-    "SECRET_KEY": "kirobench-test-secret-key-not-for-production",
-    "JWT_SECRET": "kirobench-test-secret-key-not-for-production",
+    "JWT_SECRET_KEY": "agent_cost_bench-test-secret-key-not-for-production",
+    "SECRET_KEY": "agent_cost_bench-test-secret-key-not-for-production",
+    "JWT_SECRET": "agent_cost_bench-test-secret-key-not-for-production",
     "JWT_ALGORITHM": "HS256",
     "ACCESS_TOKEN_EXPIRE_MINUTES": "15",
     "REFRESH_TOKEN_EXPIRE_DAYS": "7",
-    "DATABASE_URL": "sqlite:///./kirobench_test.db",
-    "ASYNC_DATABASE_URL": "sqlite+aiosqlite:///./kirobench_test.db",
-    "SYNC_DATABASE_URL": "sqlite:///./kirobench_test.db",
-    "TEST_DATABASE_URL": "sqlite:///./kirobench_test.db",
+    "DATABASE_URL": "sqlite:///./agent_cost_bench_test.db",
+    "ASYNC_DATABASE_URL": "sqlite+aiosqlite:///./agent_cost_bench_test.db",
+    "SYNC_DATABASE_URL": "sqlite:///./agent_cost_bench_test.db",
+    "TEST_DATABASE_URL": "sqlite:///./agent_cost_bench_test.db",
     "ENVIRONMENT": "test",
     "TESTING": "1",
     "PYTHONDONTWRITEBYTECODE": "1",
@@ -298,7 +298,7 @@ def build_marker_result(
 ) -> FunctionalTestResult:
     """Turn a verification's output into a FunctionalTestResult.
 
-    Prefers a structured ``KIROBENCH_RESULT`` marker (graduated score +
+    Prefers a structured ``AGENT_COST_BENCH_RESULT`` marker (graduated score +
     checkpoints); falls back to a binary score from the exit code. Shared by the
     verify-script path (FunctionalEvaluator) and the centralized local runner
     (ScriptVerifyRunner)."""

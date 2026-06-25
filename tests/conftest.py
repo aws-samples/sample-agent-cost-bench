@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from kirobench.models import (
+from agent_cost_bench.models import (
     BenchConfig,
     CompareMode,
     CostSource,
@@ -56,10 +56,10 @@ def vibe_task(tmp_path) -> TaskConfig:
     verify.write_text(
         "#!/bin/bash\n"
         'if [ -f "$WORKSPACE/solution.py" ]; then\n'
-        '  echo \'KIROBENCH_RESULT: {"score": 1.0, "summary": "file present"}\'\n'
+        '  echo \'AGENT_COST_BENCH_RESULT: {"score": 1.0, "summary": "file present"}\'\n'
         "  exit 0\n"
         "else\n"
-        '  echo \'KIROBENCH_RESULT: {"score": 0.0, "summary": "no file"}\'\n'
+        '  echo \'AGENT_COST_BENCH_RESULT: {"score": 0.0, "summary": "no file"}\'\n'
         "  exit 1\n"
         "fi\n"
     )
@@ -82,7 +82,7 @@ def spec_task(tmp_path) -> TaskConfig:
     verify = task_dir / "verify.sh"
     verify.write_text(
         "#!/bin/bash\n"
-        'echo \'KIROBENCH_RESULT: {"score": 1.0, "summary": "ok"}\'\n'
+        'echo \'AGENT_COST_BENCH_RESULT: {"score": 1.0, "summary": "ok"}\'\n'
         "exit 0\n"
     )
     verify.chmod(0o755)

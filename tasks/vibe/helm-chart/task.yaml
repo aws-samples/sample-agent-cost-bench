@@ -60,7 +60,7 @@ prompt: |
 # Docker verification: helm lint + helm template + pytest structural checks on
 # the rendered output. Fully offline (Helm needs no network for local rendering).
 verify:
-  image: kirobench-helm:3.16
+  image: agent-cost-bench-helm:3.16
   parser: pytest-json
   workdir: src
   tests_subdir: verify/tests

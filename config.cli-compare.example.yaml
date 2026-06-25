@@ -1,6 +1,6 @@
 # cli-compare — run coding CLIs against the same vibe tasks and compare cost.
 #
-#   kirobench cli-compare run config.cli-compare.example.yaml
+#   agent-cost-bench cli-compare run config.cli-compare.example.yaml
 #
 # `comparison_label` is a reporting headline only — it names what this run
 # compares. Optional; defaults to "cross-CLI comparison".
@@ -80,7 +80,7 @@ runners:
 
 # Task discovery (cli-compare is vibe-only; spec tasks are skipped)
 tasks_dir: tasks
-task_ids:
+task_ids: [dashboard]
 modes: ["vibe"]
 
 # LLM-as-judge
@@ -93,7 +93,7 @@ concurrency: per_target
 timeout_minutes: 20
 repeats: 1
 functional_pass_threshold: 0.99
-workspace_base: /tmp/kirobench-cli-compare
+workspace_base: /tmp/agent-cost-bench-cli-compare
 
 # Reporting
 output_dir: results

@@ -1,4 +1,4 @@
-# --- kirobench run artifacts (may contain prompts, model output, secrets) ---
+# --- agent-cost-bench run artifacts (may contain prompts, model output, secrets) ---
 results/
 *.partial.json
 .repo_cache/
@@ -20,7 +20,7 @@ dist/
 .venv/
 venv/
 .venv-verify/
-.kirobench_venv/
+.agent_cost_bench_venv/
 
 # --- test / tooling caches ---
 .pytest_cache/
@@ -30,7 +30,7 @@ venv/
 htmlcov/
 
 # --- workspaces / scratch ---
-/tmp/kirobench-*/
+/tmp/agent-cost-bench-*/
 *.db
 
 # --- editor / OS ---

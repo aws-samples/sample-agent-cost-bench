@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 
-from kirobench.models import CostSource, Pricing, Target
-from kirobench.targets import make_cli_target
-from kirobench.usage import (
+from agent_cost_bench.models import CostSource, Pricing, Target
+from agent_cost_bench.targets import make_cli_target
+from agent_cost_bench.usage import (
     parse_claude_usage,
     parse_codex_usage,
     compute_codex_cost,
@@ -126,7 +126,7 @@ def _write_metrics(path, *records):
 def test_kas_proxy_metrics_openrouter_record(tmp_path):
     """A routed turn's record (cost_usd from OpenRouter, no kiro_credits) maps
     cleanly into Usage."""
-    from kirobench.usage import parse_kas_proxy_metrics_usage
+    from agent_cost_bench.usage import parse_kas_proxy_metrics_usage
 
     mfile = tmp_path / "metrics.jsonl"
     _write_metrics(
@@ -157,7 +157,7 @@ def test_kas_proxy_metrics_openrouter_record(tmp_path):
 def test_kas_proxy_metrics_passthrough_record(tmp_path):
     """A passthrough record carries kiro_credits and a derived cost_usd; both
     surface on Usage so the report can show credits AND dollars."""
-    from kirobench.usage import parse_kas_proxy_metrics_usage
+    from agent_cost_bench.usage import parse_kas_proxy_metrics_usage
 
     mfile = tmp_path / "metrics.jsonl"
     _write_metrics(
@@ -186,7 +186,7 @@ def test_kas_proxy_metrics_passthrough_record(tmp_path):
 def test_kas_proxy_metrics_picks_correct_run_id(tmp_path):
     """When multiple records share a file, only the one with our run_id is
     returned — no timestamp-window heuristics needed."""
-    from kirobench.usage import parse_kas_proxy_metrics_usage
+    from agent_cost_bench.usage import parse_kas_proxy_metrics_usage
 
     mfile = tmp_path / "metrics.jsonl"
     _write_metrics(
@@ -207,7 +207,7 @@ def test_kas_proxy_metrics_picks_correct_run_id(tmp_path):
 def test_kas_proxy_metrics_aggregates_multi_turn(tmp_path):
     """A single CLI invocation (one run_id) may produce multiple inference
     turns. The parser sums cost and tokens across all records with that id."""
-    from kirobench.usage import parse_kas_proxy_metrics_usage
+    from agent_cost_bench.usage import parse_kas_proxy_metrics_usage
 
     mfile = tmp_path / "metrics.jsonl"
     _write_metrics(
@@ -238,7 +238,7 @@ def test_kas_proxy_metrics_aggregates_multi_turn(tmp_path):
 def test_kas_proxy_metrics_missing_record_returns_empty_usage(tmp_path):
     """No matching record (e.g. proxy isn't running) → empty Usage rather than
     a crash. The run isn't lost, just costless."""
-    from kirobench.usage import parse_kas_proxy_metrics_usage
+    from agent_cost_bench.usage import parse_kas_proxy_metrics_usage
 
     mfile = tmp_path / "metrics.jsonl"
     _write_metrics(
@@ -274,7 +274,7 @@ def test_kas_proxy_metrics_dispatch_via_parse_usage(tmp_path):
 def test_kas_proxy_metrics_no_run_id_returns_empty(tmp_path):
     """Defensive: a missing/empty run_id (e.g. legacy caller) returns empty
     Usage rather than scanning every record."""
-    from kirobench.usage import parse_kas_proxy_metrics_usage
+    from agent_cost_bench.usage import parse_kas_proxy_metrics_usage
 
     mfile = tmp_path / "metrics.jsonl"
     _write_metrics(mfile, {"path": "openrouter", "run_id": "x", "cost_usd": 0.5})
@@ -404,7 +404,7 @@ def test_codex_empty_output_returns_empty_usage():
 
 def test_compute_codex_cost_formula():
     """Verify compute_codex_cost directly — reasoning tokens not double-billed."""
-    from kirobench.usage import compute_codex_cost
+    from agent_cost_bench.usage import compute_codex_cost
 
     pricing = Pricing(
         usd_per_input_token=0.0000011,

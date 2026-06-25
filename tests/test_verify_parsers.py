@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from kirobench.verify.parsers import parse_results
+from agent_cost_bench.verify.parsers import parse_results
 
 
 def _write(d, name, text):

@@ -15,7 +15,7 @@ graduated 0.0–1.0 score (fraction of harness tests that pass), with all of the
     modules).
 
 Tasks needing bespoke scoring can still ship verify.sh / verify.py printing a
-KIROBENCH_RESULT marker — the FunctionalEvaluator prefers that when present.
+AGENT_COST_BENCH_RESULT marker — the FunctionalEvaluator prefers that when present.
 """
 
 from __future__ import annotations
@@ -31,9 +31,9 @@ from pathlib import Path
 from ..models import FunctionalTestResult, TaskConfig
 
 _STANDARD_ENV = {
-    "JWT_SECRET_KEY": "kirobench-test-secret-key-not-for-production",
-    "SECRET_KEY": "kirobench-test-secret-key-not-for-production",
-    "JWT_SECRET": "kirobench-test-secret-key-not-for-production",
+    "JWT_SECRET_KEY": "agent_cost_bench-test-secret-key-not-for-production",
+    "SECRET_KEY": "agent_cost_bench-test-secret-key-not-for-production",
+    "JWT_SECRET": "agent_cost_bench-test-secret-key-not-for-production",
     "JWT_ALGORITHM": "HS256",
     "ACCESS_TOKEN_EXPIRE_MINUTES": "15",
     "REFRESH_TOKEN_EXPIRE_DAYS": "7",
@@ -55,17 +55,17 @@ _DB_CONFIGS = [
     {
         "name": "sqlite-sync+async",
         "set": {
-            "DATABASE_URL": "sqlite:///./kirobench.db",
-            "ASYNC_DATABASE_URL": "sqlite+aiosqlite:///./kirobench.db",
-            "SYNC_DATABASE_URL": "sqlite:///./kirobench.db",
-            "TEST_DATABASE_URL": "sqlite:///./kirobench.db",
+            "DATABASE_URL": "sqlite:///./agent_cost_bench.db",
+            "ASYNC_DATABASE_URL": "sqlite+aiosqlite:///./agent_cost_bench.db",
+            "SYNC_DATABASE_URL": "sqlite:///./agent_cost_bench.db",
+            "TEST_DATABASE_URL": "sqlite:///./agent_cost_bench.db",
         },
     },
     {
         "name": "async-as-default",
         "set": {
-            "DATABASE_URL": "sqlite+aiosqlite:///./kirobench.db",
-            "ASYNC_DATABASE_URL": "sqlite+aiosqlite:///./kirobench.db",
+            "DATABASE_URL": "sqlite+aiosqlite:///./agent_cost_bench.db",
+            "ASYNC_DATABASE_URL": "sqlite+aiosqlite:///./agent_cost_bench.db",
         },
     },
     {"name": "model-default", "unset": [
@@ -100,7 +100,7 @@ class PytestSuiteRunner:
     _SOURCE_NAMES = {"Dockerfile", "Makefile"}
 
     def _code_exists(self) -> bool:
-        skip = {".kiro", ".kirobench_venv", "__pycache__", ".git", ".venv", "node_modules"}
+        skip = {".kiro", ".agent_cost_bench_venv", "__pycache__", ".git", ".venv", "node_modules"}
         for root, dirs, files in os.walk(self.workspace):
             dirs[:] = [d for d in dirs if d not in skip]
             for f in files:
@@ -157,7 +157,7 @@ class PytestSuiteRunner:
         return result
 
     async def _ensure_venv(self) -> str | None:
-        venv_dir = self.workspace / ".kirobench_venv"
+        venv_dir = self.workspace / ".agent_cost_bench_venv"
         py = venv_dir / "bin" / "python"
         marker = venv_dir / ".ready"
         if marker.exists() and py.exists():

@@ -1,8 +1,8 @@
-# kirobench
+# agent-cost-bench
 
-**How much does the same model cost across different coding CLIs? Which model delivers the best quality for your actual codebase?** kirobench answers both questions in a single run.
+**How much does the same model cost across different coding CLIs? Which model delivers the best quality for your actual codebase?** agent-cost-bench answers both questions in a single run.
 
-Bring any model, any CLI, and any use case — a real GitHub repo with your own verification tests — and kirobench will measure cost, quality, and latency side by side.
+Bring any model, any CLI, and any use case — a real GitHub repo with your own verification tests — and agent-cost-bench will measure cost, quality, and latency side by side.
 
 ## What you can do
 
@@ -34,7 +34,7 @@ Cost is always reported two ways: USD and native units (credits / AI Credits / t
 
 ```bash
 cd kiro-benchmark-framework
-pip install -e .            # installs the `kirobench` command
+pip install -e .            # installs the `agent-cost-bench` command
 pip install -e ".[dev]"     # optional: dev/test extras
 ```
 
@@ -45,7 +45,7 @@ pip install -e ".[dev]"     # optional: dev/test extras
 *"How much does Sonnet 4.6 cost through Kiro vs Claude Code vs Copilot? How does GPT-5.5 via Codex compare?"*
 
 ```bash
-kirobench cli-compare run config.cli-compare.example.yaml
+agent-cost-bench cli-compare run config.cli-compare.example.yaml
 ```
 
 The example config defines four runners: Kiro, Claude Code, Copilot (all on Sonnet 4.6), and Codex (on GPT-5.5). Cost is auto-detected from the binary name — you just provide the CLI path, model id, and pricing rates:
@@ -75,7 +75,7 @@ runners:
 *"Which model gives the best quality inside the Kiro CLI?"*
 
 ```bash
-kirobench model-compare run config.model-compare.example.yaml
+agent-cost-bench model-compare run config.model-compare.example.yaml
 ```
 
 ```yaml
@@ -123,11 +123,11 @@ Valid values: `low`, `medium`, `high` (default: `high`). A run-level fallback (`
 ### Useful commands
 
 ```bash
-kirobench cli-compare validate config.cli-compare.example.yaml        # check setup
-kirobench model-compare list-tasks config.model-compare.example.yaml  # see tasks
-kirobench report results/<run_id>.json                                # rebuild HTML
-kirobench new-task my-task                                            # scaffold (rubric)
-kirobench new-task my-task --with-tests                               # scaffold (pytest)
+agent-cost-bench cli-compare validate config.cli-compare.example.yaml        # check setup
+agent-cost-bench model-compare list-tasks config.model-compare.example.yaml  # see tasks
+agent-cost-bench report results/<run_id>.json                                # rebuild HTML
+agent-cost-bench new-task my-task                                            # scaffold (rubric)
+agent-cost-bench new-task my-task --with-tests                               # scaffold (pytest)
 ```
 
 Reports (HTML + JSON) are written to `results/` and open automatically.
@@ -192,7 +192,7 @@ For non-Python tasks. Tests run in a prebuilt image — no local toolchain neede
 
 ```yaml
 verify:
-  image: kirobench-node:20
+  image: agent-cost-bench-node:20
   parser: vitest-json
   workdir: src
   tests_subdir: verify/tests
@@ -216,7 +216,7 @@ quality:
 Any verifier can report a graduated score (0.0–1.0):
 
 ```
-KIROBENCH_RESULT: {"score": 0.7, "checkpoints": {...}, "summary": "..."}
+AGENT_COST_BENCH_RESULT: {"score": 0.7, "checkpoints": {...}, "summary": "..."}
 ```
 
 ### Pass threshold
@@ -243,5 +243,5 @@ pytest    # unit + integration; uses a MockCLI, no network or real CLI needed
 ## Troubleshooting
 
 - **Spec runs hang** — native spec mode needs a TTY. The harness uses PTY by default (`spec_use_pty: true`). If your CLI reads from stdin, set `spec_prompt_via_stdin: true`.
-- **Docker task fails** — run `kirobench <mode> validate <config>` to check images; build missing ones with `./tasks/docker/build-images.sh`.
-- **Offline restore fails** — allow network for verification: `KIROBENCH_VERIFY_NETWORK=bridge kirobench <mode> run <config>`.
+- **Docker task fails** — run `agent-cost-bench <mode> validate <config>` to check images; build missing ones with `./tasks/docker/build-images.sh`.
+- **Offline restore fails** — allow network for verification: `AGENT_COST_BENCH_VERIFY_NETWORK=bridge agent-cost-bench <mode> run <config>`.

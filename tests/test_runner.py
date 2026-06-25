@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from kirobench.models import BenchConfig, CompareMode, CostSource, TaskStatus
-from kirobench.runner import BenchmarkRunner
+from agent_cost_bench.models import BenchConfig, CompareMode, CostSource, TaskStatus
+from agent_cost_bench.runner import BenchmarkRunner
 from tests.conftest import mock_target
 
 
@@ -23,9 +23,9 @@ def _tasks_tree(root, verify_body: str, mode: str = "vibe"):
 
 _PASS_VERIFY = (
     'if [ -f "$WORKSPACE/solution.py" ]; then\n'
-    '  echo \'KIROBENCH_RESULT: {"score": 1.0, "summary": "ok"}\'\n'
+    '  echo \'AGENT_COST_BENCH_RESULT: {"score": 1.0, "summary": "ok"}\'\n'
     "  exit 0\nelse\n"
-    '  echo \'KIROBENCH_RESULT: {"score": 0.0, "summary": "missing"}\'\n'
+    '  echo \'AGENT_COST_BENCH_RESULT: {"score": 0.0, "summary": "missing"}\'\n'
     "  exit 1\nfi\n"
 )
 
@@ -61,7 +61,7 @@ async def test_end_to_end_pass(tmp_path, monkeypatch):
 async def test_noop_classified_unavailable(tmp_path, monkeypatch):
     monkeypatch.setenv("MOCK_NOOP", "1")  # no file, no credits, exit 0
     verify = (
-        'echo \'KIROBENCH_RESULT: {"score": 0.0, "checkpoints": '
+        'echo \'AGENT_COST_BENCH_RESULT: {"score": 0.0, "checkpoints": '
         '{"code_exists": {"passed": false}}, "summary": "nothing"}\'\n'
         "exit 1\n"
     )

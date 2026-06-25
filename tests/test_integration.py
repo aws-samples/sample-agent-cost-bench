@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from kirobench.models import BenchConfig, CompareMode, CostSource, TaskStatus
-from kirobench.reporter import HTMLReporter, JSONReporter
-from kirobench.runner import BenchmarkRunner
+from agent_cost_bench.models import BenchConfig, CompareMode, CostSource, TaskStatus
+from agent_cost_bench.reporter import HTMLReporter, JSONReporter
+from agent_cost_bench.runner import BenchmarkRunner
 from tests.conftest import mock_target
 
 
@@ -17,8 +17,8 @@ def _vibe_task(root):
     v = td / "verify.sh"
     v.write_text(
         "#!/bin/bash\n"
-        'if [ -f "$WORKSPACE/solution.py" ]; then echo \'KIROBENCH_RESULT: {"score":1.0}\'; exit 0;'
-        ' else echo \'KIROBENCH_RESULT: {"score":0.0}\'; exit 1; fi\n'
+        'if [ -f "$WORKSPACE/solution.py" ]; then echo \'AGENT_COST_BENCH_RESULT: {"score":1.0}\'; exit 0;'
+        ' else echo \'AGENT_COST_BENCH_RESULT: {"score":0.0}\'; exit 1; fi\n'
     )
     v.chmod(0o755)
 
@@ -34,7 +34,7 @@ def _spec_task(root):
     )
     (seed / "requirements.md").write_text("WHEN A THE SYSTEM SHALL B. " * 8)
     v = td / "verify.sh"
-    v.write_text("#!/bin/bash\necho 'KIROBENCH_RESULT: {\"score\":1.0}'\nexit 0\n")
+    v.write_text("#!/bin/bash\necho 'AGENT_COST_BENCH_RESULT: {\"score\":1.0}'\nexit 0\n")
     v.chmod(0o755)
 
 

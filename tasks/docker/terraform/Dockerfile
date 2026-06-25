@@ -1,4 +1,4 @@
-# kirobench Terraform verification image — Terraform + Python (pytest) with the
+# agent-cost-bench Terraform verification image — Terraform + Python (pytest) with the
 # AWS provider pre-warmed into a local filesystem mirror so `terraform validate`
 # runs FULLY OFFLINE (the verify step uses --network=none).
 #

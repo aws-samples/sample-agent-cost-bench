@@ -1,4 +1,4 @@
-package com.kirobench.ratelimiter;
+package com.agentcostbench.ratelimiter;
 
 /**
  * Classic token-bucket rate limiter.

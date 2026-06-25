@@ -63,7 +63,7 @@ prompt: |
 # image's pre-warmed AWS provider mirror) + `terraform validate`, plus structural
 # HCL checks, as a pytest suite. Score is the fraction of checks that pass.
 verify:
-  image: kirobench-terraform:1.9
+  image: agent-cost-bench-terraform:1.9
   parser: pytest-json
   workdir: src
   tests_subdir: verify/tests
