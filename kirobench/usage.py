@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import re
+import time as _time
 from pathlib import Path
 
 from .models import CostSource, Pricing, Target, Usage
@@ -305,8 +306,287 @@ def parse_copilot_usage(stdout: str, stderr: str, pricing: Pricing, home: Path |
 
 
 # ---------------------------------------------------------------------------
-# Generic token-regex + fixed premium-request parsers
+# kas-proxy metrics.jsonl (cost correlated via X-Kas-Run-Id)
 # ---------------------------------------------------------------------------
+
+
+def _kas_metrics_path(pricing: Pricing) -> Path:
+    """Resolve the metrics.jsonl path with the default ~/.kas-proxy fallback."""
+    raw = pricing.kas_metrics_file or "~/.kas-proxy/metrics.jsonl"
+    return Path(raw).expanduser()
+
+
+def _find_kas_metrics_record(
+    path: Path, run_id: str, timeout_seconds: float, sleep: float = 0.1
+) -> dict | None:
+    """
+    Locate ALL metrics.jsonl records whose ``run_id`` matches, aggregate them,
+    and return a single combined dict.
+
+    A single CLI invocation (one run_id) may produce multiple inference turns
+    (the agent loop calls the model N times). Each turn writes one record. We
+    sum cost/tokens across all records for that run_id so the harness sees the
+    total task cost, not just one turn's.
+
+    The proxy may flush the last line a fraction of a second after the CLI
+    returns, so we poll the file until we either find at least one record or
+    exhaust the timeout.
+    """
+    if not run_id:
+        return None
+    deadline = _time.monotonic() + max(0.0, timeout_seconds)
+    last_size = -1
+    while True:
+        if path.exists():
+            try:
+                size = path.stat().st_size
+            except OSError:
+                size = -1
+            if size != last_size:
+                last_size = size
+                try:
+                    records: list[dict] = []
+                    with path.open("r", encoding="utf-8", errors="replace") as fh:
+                        for line in fh:
+                            line = line.strip()
+                            if not line or not line.startswith("{"):
+                                continue
+                            try:
+                                obj = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                            if obj.get("run_id") == run_id:
+                                records.append(obj)
+                    if records:
+                        return _aggregate_kas_records(records)
+                except OSError:
+                    pass
+        if _time.monotonic() >= deadline:
+            return None
+        _time.sleep(sleep)
+
+
+def _aggregate_kas_records(records: list[dict]) -> dict:
+    """Combine multiple per-turn records from one run_id into one summary.
+
+    Sums: cost_usd, input_tokens, output_tokens, kiro_credits, total_ms.
+    Takes the last record's path/model_id (they should all match).
+    """
+    def _sum_field(field: str) -> float | int | None:
+        vals = [r[field] for r in records if r.get(field) is not None]
+        return sum(vals) if vals else None
+
+    return {
+        "path": records[-1].get("path"),
+        "model_id": records[-1].get("model_id"),
+        "run_id": records[-1].get("run_id"),
+        "cost_usd": _sum_field("cost_usd"),
+        "input_tokens": _sum_field("input_tokens"),
+        "output_tokens": _sum_field("output_tokens"),
+        "kiro_credits": _sum_field("kiro_credits"),
+        "total_ms": _sum_field("total_ms"),
+        "turns": len(records),
+    }
+
+
+def parse_kas_proxy_metrics_usage(
+    pricing: Pricing, run_id: str | None
+) -> Usage:
+    """
+    Read kas-proxy's metrics.jsonl and return Usage for the turn correlated by
+    ``run_id`` (an X-Kas-Run-Id header injected by the harness via KAS_RUN_ID).
+
+    Returns an empty ``Usage()`` when no run_id is supplied (e.g. the proxy
+    isn't in use) or no matching record is found within the timeout.
+
+    Field mapping (kas-proxy metrics → kirobench Usage):
+      cost_usd          -> Usage.cost_usd            (real billed cost)
+      input_tokens      -> Usage.input_tokens
+      output_tokens     -> Usage.output_tokens
+      kiro_credits      -> Usage.raw_credits          (passthrough only)
+      ttft_ms or ttfb_ms -> Usage.seconds             (best available timing)
+    Both ``openrouter`` and ``passthrough`` records map cleanly; cost_usd is
+    populated by the proxy on both paths (passthrough derived from
+    kiro_credits × kiro_credit_price_usd).
+    """
+    if not run_id:
+        return Usage()
+    path = _kas_metrics_path(pricing)
+    record = _find_kas_metrics_record(
+        path, run_id, pricing.kas_metrics_timeout_seconds
+    )
+    if record is None:
+        return Usage()
+
+    cost = record.get("cost_usd")
+    input_tokens = record.get("input_tokens")
+    output_tokens = record.get("output_tokens")
+    raw_credits = record.get("kiro_credits")
+    # Sum of total_ms across all inference turns for this run_id — the
+    # cumulative time the model spent on inference (excludes tool execution,
+    # file I/O, agent orchestration between turns). More meaningful than
+    # wall-clock for comparing model speed across different agent strategies.
+    total_ms = record.get("total_ms")
+    seconds = (total_ms / 1000.0) if isinstance(total_ms, (int, float)) else None
+
+    return Usage(
+        cost_usd=float(cost) if isinstance(cost, (int, float)) else None,
+        input_tokens=int(input_tokens) if isinstance(input_tokens, (int, float)) else None,
+        output_tokens=int(output_tokens) if isinstance(output_tokens, (int, float)) else None,
+        seconds=seconds,
+        raw_credits=float(raw_credits) if isinstance(raw_credits, (int, float)) else None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Codex CLI JSONL (codex exec --json)
+# ---------------------------------------------------------------------------
+
+# Pricing reference: https://developers.openai.com/api/docs/pricing?latest-pricing=standard
+# All rates below are for standard (non-batch, non-flex) pricing.
+#
+# Cost formula (per OpenAI billing):
+#   uncached_input = input_tokens - cached_input_tokens
+#   cost = (uncached_input      / 1M) × usd_per_input_token
+#        + (cached_input_tokens / 1M) × usd_per_cached_input_token
+#        + (output_tokens       / 1M) × usd_per_output_token
+#
+# NOTE: reasoning_output_tokens is a SUBSET of output_tokens — not additive.
+# The API bills all output tokens (reasoning + visible) at the same output
+# rate. reasoning_output_tokens is an informational breakdown only.
+#
+# Standard rates per 1M tokens (from OpenAI pricing page, June 2026):
+#   Model              input    cached_input    output
+#   o4-mini            $1.10       $0.275        $4.40
+#   o3                 $2.00       $0.500        $8.00
+#   o3-mini            $1.10       $0.550        $4.40
+#   o1                $15.00       $7.500       $60.00
+#   gpt-5.5            $5.00       $0.500       $30.00
+#   gpt-5.5-pro       $30.00          n/a      $180.00
+#   gpt-5.4            $2.50       $0.250       $15.00
+#   gpt-5.4-mini       $0.75       $0.075        $4.50
+#   gpt-5.4-pro       $30.00          n/a      $180.00
+#   gpt-4o             $2.50       $1.250       $10.00
+#   gpt-4.1            $2.00       $0.500        $8.00
+
+
+def compute_codex_cost(
+    input_tokens: int,
+    cached_input_tokens: int,
+    output_tokens: int,
+    reasoning_output_tokens: int,  # informational only — already included in output_tokens
+    pricing: Pricing,
+) -> float | None:
+    """Compute Codex API cost using OpenAI's standard billing formula.
+
+    Pricing reference: https://developers.openai.com/api/docs/pricing?latest-pricing=standard
+
+    The ``Pricing`` fields are **per-token** rates. In the YAML config, express
+    them as the published per-1M-token rate divided by 1,000,000
+    (e.g. $1.10/1M → ``0.0000011``).
+
+    Formula::
+
+        uncached_input = input_tokens - cached_input_tokens
+        cost = uncached_input      × usd_per_input_token
+             + cached_input_tokens × usd_per_cached_input_token
+             + output_tokens       × usd_per_output_token
+
+    **Important**: ``reasoning_output_tokens`` is a **subset** of
+    ``output_tokens`` (already included — not additive). The API bills all
+    output tokens at the same rate regardless of whether they are reasoning or
+    visible response tokens. The parameter is accepted for call-site
+    compatibility but is not used in the cost calculation.
+
+    When ``usd_per_cached_input_token`` is absent, cached tokens are billed at
+    the regular input rate (conservative fallback).
+
+    Returns ``None`` when the minimum required rates (input + output) are not
+    configured, so callers can distinguish "no pricing set" from a zero cost.
+    """
+    p_in = pricing.usd_per_input_token
+    p_out = pricing.usd_per_output_token
+    if p_in is None or p_out is None:
+        return None
+
+    # Cached tokens are cheaper; fall back to regular input rate when no
+    # separate cached rate is configured.
+    p_cached = (
+        pricing.usd_per_cached_input_token
+        if pricing.usd_per_cached_input_token is not None
+        else p_in
+    )
+
+    uncached_input = max(0, input_tokens - cached_input_tokens)
+    cost = (
+        uncached_input        * p_in
+        + cached_input_tokens * p_cached
+        + output_tokens       * p_out
+        # reasoning_output_tokens intentionally omitted — subset of output_tokens
+    )
+    return cost
+
+
+def parse_codex_usage(stdout: str, stderr: str, pricing: Pricing) -> Usage:
+    """Parse ``codex exec --json`` JSONL output.
+
+    Codex streams JSONL events to stdout. Token usage lives in
+    ``turn.completed`` events::
+
+        {"type":"turn.completed","usage":{"input_tokens":N,
+            "cached_input_tokens":N,"output_tokens":N,
+            "reasoning_output_tokens":N}}
+
+    A task may produce multiple turns (the agent loop calls the model several
+    times), so we **sum** tokens across ALL ``turn.completed`` events in the
+    output — the same aggregation behaviour as kas-proxy metrics.
+
+    Cost is computed by :func:`compute_codex_cost`:
+    ``uncached_input × p_in + cached_input × p_cached + output × p_out``.
+    ``reasoning_output_tokens`` is a subset of ``output_tokens`` (already
+    counted there), so it is tracked for reporting but not billed separately.
+
+    Pricing reference: https://developers.openai.com/api/docs/pricing?latest-pricing=standard
+
+    Timing: Codex does not emit a wall-clock duration in the JSONL stream.
+    ``seconds`` is left ``None``; the harness records wall-clock time separately.
+    """
+    in_tok = out_tok = reasoning_tok = cached_tok = 0
+    saw_usage = False
+
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if obj.get("type") == "turn.completed":
+            usage = obj.get("usage")
+            if not isinstance(usage, dict):
+                continue
+            saw_usage = True
+            in_tok += int(usage.get("input_tokens") or 0)
+            cached_tok += int(usage.get("cached_input_tokens") or 0)
+            out_tok += int(usage.get("output_tokens") or 0)
+            reasoning_tok += int(usage.get("reasoning_output_tokens") or 0)
+
+    if not saw_usage:
+        return Usage()
+
+    cost = compute_codex_cost(in_tok, cached_tok, out_tok, reasoning_tok, pricing)
+
+    return Usage(
+        cost_usd=cost,
+        input_tokens=in_tok or None,
+        cached_input_tokens=cached_tok or None,
+        output_tokens=out_tok or None,
+        reasoning_output_tokens=reasoning_tok or None,
+    )
+
+
+
 
 
 def parse_token_regex_usage(
@@ -350,8 +630,19 @@ def parse_premium_request_usage(pricing: Pricing) -> Usage:
 # ---------------------------------------------------------------------------
 
 
-def parse_usage(target: Target, stdout: str, stderr: str = "", home: Path | None = None) -> Usage:
-    """Parse usage for a target according to its ``cost_source``."""
+def parse_usage(
+    target: Target,
+    stdout: str,
+    stderr: str = "",
+    home: Path | None = None,
+    run_id: str | None = None,
+) -> Usage:
+    """Parse usage for a target according to its ``cost_source``.
+
+    ``run_id`` is the per-turn correlation id used by the kas_proxy_metrics
+    parser (passed through X-Kas-Run-Id by the shim, into the proxy's
+    metrics.jsonl); ignored by other cost sources.
+    """
     src = target.cost_source
     p = target.pricing
     if src == CostSource.KIRO_CREDITS:
@@ -360,6 +651,10 @@ def parse_usage(target: Target, stdout: str, stderr: str = "", home: Path | None
         return parse_claude_usage(stdout, stderr, p)
     if src == CostSource.COPILOT_JSON:
         return parse_copilot_usage(stdout, stderr, p, home=home)
+    if src == CostSource.CODEX_JSON:
+        return parse_codex_usage(stdout, stderr, p)
+    if src == CostSource.KAS_PROXY_METRICS:
+        return parse_kas_proxy_metrics_usage(p, run_id)
     if src == CostSource.TOKENS:
         return parse_token_regex_usage(stdout, stderr, p, target.token_regex)
     if src == CostSource.PREMIUM_REQUEST:

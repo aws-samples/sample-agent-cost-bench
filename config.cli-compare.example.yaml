@@ -3,72 +3,100 @@
 #   kirobench cli-compare run config.cli-compare.example.yaml
 #
 # `comparison_label` is a reporting headline only — it names what this run
-# compares. Each runner still uses its own `model_id` (which may differ between
-# CLIs); the label does NOT set or override any model. Optional; defaults to
-# "cross-CLI comparison".
+# compares. Optional; defaults to "cross-CLI comparison".
+#
+# cost_source is inferred automatically from the binary name:
+#   kiro / kiro-cli  → kiro_credits
+#   claude           → claude_json
+#   copilot          → copilot_json
+#   codex            → codex_json
+# You can still set it explicitly if needed, but in most cases it's not required.
 
-comparison_label: claude-sonnet-4.6 across CLIs
+comparison_label: Sonnet 4.6 (Kiro / Claude Code / Copilot) vs GPT-5.5 (Codex)
 
 # LLM-as-judge for rubric tasks (optional — only needed if task_ids includes
 # rubric tasks like bedrock-sentiment that have quality.rubric).
-# The judge always uses the Kiro CLI regardless of which runner CLIs are
-# being benchmarked, so set judge_cli_path to your Kiro binary name.
 # judge_model: claude-opus-4.8
-# judge_cli_path: kiro-cli   # required if your Kiro binary is not literally "kiro"
+# judge_cli_path: kiro-cli
 # judge_weight: 0.6
 effort: high
+
 runners:
+  # ── Kiro CLI (claude-sonnet-4.6) ──────────────────────────────────────────
   - name: kiro
-    display_name: Kiro CLI
+    display_name: "Kiro (claude-sonnet-4.6)"
     cli_path: kiro-cli
     model_id: claude-sonnet-4.6
-    cost_source: kiro_credits
     pricing:
       usd_per_credit: 0.04
-    # Kiro reads the prompt as a trailing arg; model flag is inline here.
-    cli_base_args: [chat, --no-interactive, --trust-all-tools, "--model={model}", "--effort={effort}"]
+    cli_base_args: [chat, --no-interactive, --trust-all-tools,
+                    "--model={model}", "--effort={effort}"]
 
+  # ── Claude Code (claude-sonnet-4.6) ───────────────────────────────────────
+  # cost is read directly from --output-format json (total_cost_usd field)
   - name: claude-code
-    display_name: Claude Code
+    display_name: "Claude Code (claude-sonnet-4.6)"
     cli_path: claude
     model_id: us.anthropic.claude-sonnet-4-6
-    cost_source: claude_json   # CLI reports total_cost_usd directly
     cli_base_args: ["-p", "{prompt}", "--output-format", "json",
-                    "--model", "{model}", "--dangerously-skip-permissions", "--effort", "{effort}"]
+                    "--model", "{model}", "--dangerously-skip-permissions",
+                    "--effort", "{effort}"]
 
+  # ── GitHub Copilot (claude-sonnet-4.6) ────────────────────────────────────
   - name: copilot
-    display_name: GitHub Copilot
+    display_name: "GitHub Copilot (claude-sonnet-4.6)"
     cli_path: copilot
     model_id: claude-sonnet-4.6
-    cost_source: copilot_json  # totalNanoAiu from session-state; fallback below
     pricing:
-      usd_per_premium_request: 0.04
+      usd_per_premium_request: 0.04   # fallback if session-state AIU unavailable
     cli_base_args: ["-p", "{prompt}", "--model", "{model}",
-                    "--allow-all-tools", "--output-format", "json", "--effort", "{effort}"]
+                    "--allow-all-tools", "--output-format", "json",
+                    "--effort", "{effort}"]
+
+  # ── OpenAI Codex (gpt-5.5) ────────────────────────────────────────────────
+  # Pricing reference: https://developers.openai.com/api/docs/pricing?latest-pricing=standard
+  # gpt-5.5 standard rates (per 1M tokens): input $5.00 / cached $0.50 / output $30.00
+  #
+  # Formula:  cost = (input - cached) / 1M × input_rate
+  #                + cached           / 1M × cached_input_rate
+  #                + output           / 1M × output_rate
+  # Note: reasoning_output_tokens is a subset of output_tokens, not extra.
+  - name: codex
+    display_name: "OpenAI Codex (gpt-5.5)"
+    cli_path: codex
+    model_id: gpt-5.5
+    pricing:
+      usd_per_input_token:        0.000005     # $5.00  / 1M
+      usd_per_cached_input_token: 0.0000005    # $0.50  / 1M
+      usd_per_output_token:       0.000030     # $30.00 / 1M
+    cli_base_args:
+      - "exec"
+      - "--json"
+      - "--ephemeral"
+      - "--skip-git-repo-check"
+      - "--dangerously-bypass-approvals-and-sandbox"
+      - "-m"
+      - "{model}"
+      - "{prompt}"
 
 # Task discovery (cli-compare is vibe-only; spec tasks are skipped)
 tasks_dir: tasks
-task_ids:
+task_ids: [dashboard]
 modes: ["vibe"]
 
-# LLM as Judge
+# LLM-as-judge
 judge_cli_path: kiro-cli
 judge_model: claude-opus-4.8
 judge_weight: 0.6
 
 # Execution
-# concurrency controls how many task × runner jobs run in parallel:
-#   per_target (default) — one job per runner at a time (conservative, safe for laptops)
-#   full                 — runners × tasks all at once (faster on CI / fast machines)
-#   N                    — explicit integer cap
-# max_concurrency: 8     # optional hard cap applied on top of the strategy
 concurrency: per_target
-timeout_minutes: 15
+timeout_minutes: 20
 repeats: 1
 functional_pass_threshold: 0.99
 workspace_base: /tmp/kirobench-cli-compare
 
 # Reporting
 output_dir: results
-report_title: "Benchmark Analysis of Sonnet 4.6 across Kiro, Claude Code and Copilot"
+report_title: "Benchmark Analysis: Sonnet 4.6 (Kiro / Claude Code / Copilot) vs GPT-5.5 (Codex)"
 open_report: true

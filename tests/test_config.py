@@ -190,3 +190,90 @@ def test_comparison_label_default_and_legacy_fallback(tmp_path, monkeypatch):
         """,
     )
     assert load_cli_compare_config(legacy).comparison_label == "legacy-label"
+
+
+# ---------------------------------------------------------------------------
+# cost_source auto-inference from binary name
+# ---------------------------------------------------------------------------
+
+
+def test_cost_source_inferred_from_binary_name(tmp_path, monkeypatch):
+    """cost_source is optional in YAML — inferred from cli_path basename."""
+    from kirobench.targets import _infer_cost_source
+    from kirobench.models import Pricing
+
+    # Binary name → expected cost_source
+    cases = [
+        ("kiro",          {},                                   CostSource.KIRO_CREDITS),
+        ("kiro-cli",      {},                                   CostSource.KIRO_CREDITS),
+        ("/usr/bin/kiro", {},                                   CostSource.KIRO_CREDITS),
+        ("claude",        {},                                   CostSource.CLAUDE_JSON),
+        ("/opt/claude",   {},                                   CostSource.CLAUDE_JSON),
+        ("copilot",       {},                                   CostSource.COPILOT_JSON),
+        ("codex",         {"usd_per_input_token": 0.000001,
+                           "usd_per_output_token": 0.000004},  CostSource.CODEX_JSON),
+        ("codex",         {},                                   CostSource.CODEX_JSON),
+        ("my-cli",        {"usd_per_input_token": 0.000001,
+                           "usd_per_output_token": 0.000004},  CostSource.TOKENS),
+        ("my-cli",        {"usd_per_premium_request": 0.04},   CostSource.PREMIUM_REQUEST),
+        ("unknown-tool",  {},                                   CostSource.NONE),
+    ]
+    for cli_path, pricing, expected in cases:
+        result = _infer_cost_source(cli_path, pricing)
+        assert result == expected, f"{cli_path!r} + {pricing} → expected {expected}, got {result}"
+
+
+def test_explicit_cost_source_wins_over_inference(tmp_path, monkeypatch):
+    """An explicit cost_source in YAML always overrides auto-inference."""
+    from kirobench.targets import make_cli_target
+
+    # 'claude' binary but forced to kiro_credits — contrived but proves override works.
+    t = make_cli_target({
+        "name": "custom",
+        "cli_path": "claude",
+        "model_id": "some-model",
+        "cost_source": "kiro_credits",
+        "pricing": {"usd_per_credit": 0.04},
+    })
+    assert t.cost_source == CostSource.KIRO_CREDITS
+
+
+def test_cli_compare_config_no_cost_source_in_yaml(tmp_path, monkeypatch):
+    """End-to-end: a cli-compare config with no cost_source fields gets the
+    right sources inferred for kiro-cli, claude, copilot, and codex."""
+    monkeypatch.chdir(tmp_path)
+    tasks_dir = _make_tasks(tmp_path)
+    cfg_path = _write(
+        tmp_path / "infer.yaml",
+        f"""
+        runners:
+          - name: kiro
+            cli_path: kiro-cli
+            model_id: claude-sonnet-4.6
+            pricing: {{usd_per_credit: 0.04}}
+            cli_base_args: [chat, "--model={{model}}"]
+          - name: claude-code
+            cli_path: claude
+            model_id: claude-sonnet-4-6
+            cli_base_args: ["-p", "{{prompt}}", "--output-format", "json", "--model", "{{model}}"]
+          - name: copilot
+            cli_path: copilot
+            model_id: claude-sonnet-4.6
+            pricing: {{usd_per_premium_request: 0.04}}
+            cli_base_args: ["-p", "{{prompt}}", "--model", "{{model}}", "--output-format", "json"]
+          - name: codex
+            cli_path: codex
+            model_id: gpt-5.5
+            pricing:
+              usd_per_input_token: 0.000005
+              usd_per_output_token: 0.000030
+            cli_base_args: ["exec", "--json", "--ephemeral", "-m", "{{model}}", "{{prompt}}"]
+        tasks_dir: {tasks_dir}
+        """,
+    )
+    cfg = load_cli_compare_config(cfg_path)
+    by_name = {t.name: t for t in cfg.targets}
+    assert by_name["kiro"].cost_source == CostSource.KIRO_CREDITS
+    assert by_name["claude-code"].cost_source == CostSource.CLAUDE_JSON
+    assert by_name["copilot"].cost_source == CostSource.COPILOT_JSON
+    assert by_name["codex"].cost_source == CostSource.CODEX_JSON

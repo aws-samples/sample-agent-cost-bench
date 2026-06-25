@@ -18,6 +18,7 @@ import shlex
 import signal
 import sys
 import time as _time
+import uuid
 from pathlib import Path
 
 from ..logger import RunLogger
@@ -138,7 +139,7 @@ class BaseExecutor:
     # Command / env assembly from Target templates
     # ------------------------------------------------------------------
 
-    def _build_env(self) -> dict[str, str]:
+    def _build_env(self, run_id: str | None = None) -> dict[str, str]:
         env = os.environ.copy()
         # Kiro targets: only inject an explicit API key when configured;
         # otherwise rely on the CLI's own login session — exactly like a manual
@@ -151,6 +152,13 @@ class BaseExecutor:
             if self.config.kiro_api_key:
                 env["KIRO_API_KEY"] = self.config.kiro_api_key
         env.update(self.target.env)
+        # Per-turn correlation id for kas-proxy: the shim forwards this as an
+        # X-Kas-Run-Id header on redirected inference requests, letting the
+        # kas_proxy_metrics cost source look up the matching metrics.jsonl
+        # record. Setting this for every Kiro turn is harmless when kas-proxy
+        # isn't in use (the shim only attaches the header when present).
+        if run_id:
+            env["KAS_RUN_ID"] = run_id
         return env
 
     def _build_command(self, prompt: str, agent: str | None = None, extra_args: list[str] | None = None) -> list[str]:
@@ -187,12 +195,17 @@ class BaseExecutor:
     # ------------------------------------------------------------------
 
     async def _exec_pty(
-        self, cmd: list[str], timeout: float, stdin_text: str | None
+        self, cmd: list[str], timeout: float, stdin_text: str | None,
+        env: dict[str, str] | None = None,
     ) -> tuple[int, str, bool]:
         """Run ``cmd`` attached to a pseudo-terminal so a TTY-requiring CLI (e.g.
         Kiro's `--mode spec`) runs as if interactive. Returns
         (exit_code, combined_output, timed_out). stdout+stderr are merged by the
-        PTY. Unix only."""
+        PTY. Unix only.
+
+        ``env`` is the subprocess environment; pass an env that already includes
+        the per-turn KAS_RUN_ID. Falls back to ``self._build_env()`` for backward
+        compatibility with direct callers."""
         master_fd, slave_fd = pty.openpty()
         # Give the pty a sane window size so TUIs render instead of waiting.
         try:
@@ -210,7 +223,7 @@ class BaseExecutor:
             stdout=slave_fd,
             stderr=slave_fd,
             cwd=str(self.workspace),
-            env=self._build_env(),
+            env=env if env is not None else self._build_env(),
             start_new_session=True,
         )
         os.close(slave_fd)  # parent keeps only the master end
@@ -269,8 +282,12 @@ class BaseExecutor:
         extra_args: list[str] | None = None,
         stdin_text: str | None = None,
         use_pty: bool = False,
-    ) -> tuple[int, str, str]:
-        """Run one CLI turn headless. Returns (exit_code, stdout, stderr).
+    ) -> tuple[int, str, str, str]:
+        """Run one CLI turn headless. Returns (exit_code, stdout, stderr, run_id).
+
+        ``run_id`` is the unique per-turn correlation id set as ``KAS_RUN_ID``
+        in the subprocess env; callers thread it into ``parse_usage`` so the
+        kas_proxy_metrics cost source can look up the matching record.
 
         If ``stdin_text`` is provided, it is piped to the process's stdin (used
         by spec mode, which reads its request from stdin). Otherwise stdin is
@@ -281,6 +298,14 @@ class BaseExecutor:
         cmd = self._build_command(prompt, agent, extra_args)
         timeout = timeout_seconds or (self.task.timeout_minutes * 60)
         start = _time.monotonic()
+        # Generate a unique per-turn correlation id. The shim (loaded via
+        # kiro-cli-plus) sends it as X-Kas-Run-Id on the redirected inference
+        # request so the kas-proxy metrics record can be looked up by id later.
+        # Cheap and always-on: setting KAS_RUN_ID is a no-op when kas-proxy
+        # isn't in the loop, but lets the kas_proxy_metrics cost source work
+        # the moment the proxy is.
+        run_id = uuid.uuid4().hex
+        env = self._build_env(run_id=run_id)
 
         if self._logger:
             stdin_note = "  stdin=<prompt>" if stdin_text is not None else ""
@@ -298,7 +323,7 @@ class BaseExecutor:
 
         # PTY path for TTY-requiring CLIs (spec mode). stdout/stderr are merged.
         if use_pty:
-            exit_code, stdout, timed_out = await self._exec_pty(cmd, timeout, stdin_text)
+            exit_code, stdout, timed_out = await self._exec_pty(cmd, timeout, stdin_text, env=env)
             stderr = ""
             wall = _time.monotonic() - start
             if timed_out:
@@ -315,14 +340,14 @@ class BaseExecutor:
                     stdout=stdout, stderr="",
                 )
             if self._logger:
-                usage = parse_usage(self.target, stdout, stderr)
+                usage = parse_usage(self.target, stdout, stderr, run_id=run_id)
                 await self._logger.log_call(
                     task_id=self.task.id, target=self.target.label, phase=phase,
                     command=cmd, prompt=prompt, stdout=stdout, stderr=stderr,
                     exit_code=exit_code, duration_seconds=wall,
                     credits=usage.raw_credits, cost_usd=usage.cost_usd,
                 )
-            return exit_code, stdout, stderr
+            return exit_code, stdout, stderr, run_id
 
         stdin_mode = asyncio.subprocess.PIPE if stdin_text is not None else asyncio.subprocess.DEVNULL
         proc = None
@@ -333,7 +358,7 @@ class BaseExecutor:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(self.workspace),
-                env=self._build_env(),
+                env=env,
                 start_new_session=True,
             )
             input_bytes = stdin_text.encode("utf-8") if stdin_text is not None else None
@@ -397,7 +422,7 @@ class BaseExecutor:
                 )
 
             if self._logger:
-                usage = parse_usage(self.target, stdout, stderr)
+                usage = parse_usage(self.target, stdout, stderr, run_id=run_id)
                 await self._logger.log_call(
                     task_id=self.task.id,
                     target=self.target.label,
@@ -411,7 +436,7 @@ class BaseExecutor:
                     credits=usage.raw_credits,
                     cost_usd=usage.cost_usd,
                 )
-            return exit_code, stdout, stderr
+            return exit_code, stdout, stderr, run_id
 
         except asyncio.CancelledError:
             if proc is not None:
@@ -477,11 +502,11 @@ class BaseExecutor:
 
         start = _time.monotonic()
         try:
-            exit_code, stdout, stderr = await self.run_cli_turn(
+            exit_code, stdout, stderr, run_id = await self.run_cli_turn(
                 prompt=prompt, agent=agent, timeout_seconds=timeout_seconds, phase=phase,
                 extra_args=extra_args, stdin_text=stdin_text, use_pty=use_pty,
             )
-            usage: Usage = parse_usage(self.target, stdout, stderr)
+            usage: Usage = parse_usage(self.target, stdout, stderr, run_id=run_id)
             phase_result = PhaseResult(
                 phase=phase,
                 success=exit_code == 0,
@@ -491,7 +516,9 @@ class BaseExecutor:
                 credits=usage.raw_credits,
                 cost_usd=usage.cost_usd,
                 input_tokens=usage.input_tokens,
+                cached_input_tokens=usage.cached_input_tokens,
                 output_tokens=usage.output_tokens,
+                reasoning_output_tokens=usage.reasoning_output_tokens,
                 premium_requests=usage.premium_requests,
                 cli_reported_seconds=usage.seconds,
                 error=None if exit_code == 0 else f"CLI exited with code {exit_code}",
@@ -538,4 +565,8 @@ class VibeExecutor(BaseExecutor):
                     error=f"No prompt found: set 'prompt:' in task.yaml for task in {where}",
                 )
             ]
-        return [await self.run_phase("vibe", prompt, agent=self.config.vibe_agent)]
+        return [await self.run_phase(
+            "vibe", prompt,
+            agent=self.config.vibe_agent,
+            use_pty=self.config.vibe_use_pty,
+        )]

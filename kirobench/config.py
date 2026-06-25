@@ -148,6 +148,10 @@ def load_model_compare_config(config_path: str | Path) -> BenchConfig:
     usd_per_credit = pricing.get("usd_per_credit")
     # Optional override of the native spec-mode args (default ["--mode","spec"]).
     spec_mode_args = raw.get("spec_mode_args")
+    # Optional kas-proxy metrics integration (Phase 2 of the OpenRouter path).
+    use_kas_metrics = bool(raw.get("kas_proxy_metrics", False))
+    kas_metrics_file = raw.get("kas_proxy_metrics_file")
+    kas_metrics_timeout = float(raw.get("kas_proxy_metrics_timeout_seconds", 5.0))
 
     targets = [
         make_kiro_target(
@@ -155,6 +159,9 @@ def load_model_compare_config(config_path: str | Path) -> BenchConfig:
             default_cli_path=kiro_cli_path,
             usd_per_credit=usd_per_credit,
             spec_mode_args=spec_mode_args,
+            use_kas_proxy_metrics=use_kas_metrics,
+            kas_metrics_file=kas_metrics_file,
+            kas_metrics_timeout_seconds=kas_metrics_timeout,
         )
         for m in models
     ]
@@ -176,6 +183,10 @@ def load_model_compare_config(config_path: str | Path) -> BenchConfig:
         modes=modes,
         spec_prompt_via_stdin=raw.get("spec_prompt_via_stdin", False),
         spec_use_pty=raw.get("spec_use_pty", True),
+        kas_proxy_metrics=use_kas_metrics,
+        kas_proxy_metrics_file=kas_metrics_file,
+        kas_proxy_metrics_timeout_seconds=kas_metrics_timeout,
+        vibe_use_pty=bool(raw.get("vibe_use_pty", False)),
         **_passthrough(raw),
     )
     if "judge_weight" in raw:

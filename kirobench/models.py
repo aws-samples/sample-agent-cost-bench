@@ -98,8 +98,10 @@ class CostSource(str, Enum):
     KIRO_CREDITS = "kiro_credits"        # parse "Credits: X" telemetry, × usd_per_credit
     CLAUDE_JSON = "claude_json"          # parse `claude -p --output-format json` total_cost_usd
     COPILOT_JSON = "copilot_json"        # parse `copilot --output-format json` JSONL + session-state AIU
+    CODEX_JSON = "codex_json"            # parse `codex exec --json` JSONL turn.completed events
     TOKENS = "tokens"                    # parse token counts via regex, price per-token
     PREMIUM_REQUEST = "premium_request"  # fixed N premium/credit requests per run × price
+    KAS_PROXY_METRICS = "kas_proxy_metrics"  # read kas-proxy's metrics.jsonl, correlated by run_id
     NONE = "none"                        # no cost data available
 
 
@@ -113,27 +115,61 @@ class Pricing(BaseModel):
     Pricing knobs used to normalize each CLI's native cost unit to USD.
 
     Only the fields relevant to a target's ``cost_source`` are used:
-      - kiro_credits     -> usd_per_credit
-      - claude_json      -> (none; CLI reports total_cost_usd directly)
-      - copilot_json     -> usd_per_premium_request (fallback) and/or token rates
-      - tokens           -> usd_per_input_token + usd_per_output_token
-      - premium_request  -> usd_per_premium_request
+      - kiro_credits      -> usd_per_credit
+      - claude_json       -> (none; CLI reports total_cost_usd directly)
+      - copilot_json      -> usd_per_premium_request (fallback) and/or token rates
+      - codex_json        -> usd_per_input_token + usd_per_output_token + usd_per_reasoning_token
+      - tokens            -> usd_per_input_token + usd_per_output_token
+      - premium_request   -> usd_per_premium_request
+      - kas_proxy_metrics -> kas_metrics_file + kas_metrics_timeout_seconds
     """
 
     usd_per_credit: float | None = Field(
         default=None, description="USD value of one Kiro credit (for kiro_credits)"
     )
     usd_per_input_token: float | None = Field(
-        default=None, description="USD per input token (for tokens cost_source)"
+        default=None, description="USD per input token (for tokens / codex_json cost_source)"
+    )
+    usd_per_cached_input_token: float | None = Field(
+        default=None,
+        description=(
+            "USD per cached input token (codex_json cost_source). "
+            "When None, cached tokens are billed at the regular input rate. "
+            "For Codex o4-mini (standard): $0.275/1M = $0.000000275/token."
+        ),
     )
     usd_per_output_token: float | None = Field(
-        default=None, description="USD per output token (for tokens cost_source)"
+        default=None, description="USD per output token (for tokens / codex_json cost_source)"
+    )
+    usd_per_reasoning_token: float | None = Field(
+        default=None,
+        description=(
+            "USD per reasoning / thinking token (codex_json cost_source). "
+            "When None, reasoning tokens are billed at the regular output rate."
+        ),
     )
     usd_per_premium_request: float | None = Field(
         default=None, description="USD per premium/credit request (Copilot)"
     )
     requests_per_run: float = Field(
         default=1.0, description="Premium requests counted per run for premium_request"
+    )
+    # ---- kas_proxy_metrics cost source ----
+    kas_metrics_file: str | None = Field(
+        default=None,
+        description=(
+            "Path to kas-proxy's metrics.jsonl. The parser reads this file and "
+            "looks up the record matching the per-turn KAS_RUN_ID. Defaults to "
+            "~/.kas-proxy/metrics.jsonl when None."
+        ),
+    )
+    kas_metrics_timeout_seconds: float = Field(
+        default=5.0, ge=0.0,
+        description=(
+            "How long to wait after the CLI exits before giving up on a "
+            "matching record (the proxy may write the line fractionally after "
+            "the CLI returns control)."
+        ),
     )
 
 
@@ -144,7 +180,9 @@ class Usage:
 
     cost_usd: float | None = None
     input_tokens: int | None = None
+    cached_input_tokens: int | None = None          # tokens served from cache (Codex)
     output_tokens: int | None = None
+    reasoning_output_tokens: int | None = None      # thinking/reasoning tokens (Codex o-series)
     seconds: float | None = None
     # Native units, kept for side-by-side reporting
     raw_credits: float | None = None
@@ -503,6 +541,26 @@ class BenchConfig(BaseModel):
     # is NOT a positional arg). Set true to pipe the prompt to stdin for spec
     # tasks instead of appending it as an argument.
     spec_prompt_via_stdin: bool = Field(default=False)
+    # Run vibe tasks under a pseudo-terminal. Set true for kiro-cli v3 (via
+    # kiro-cli-plus) which doesn't exit cleanly in headless mode: under a PTY
+    # the master-close signals EOF to the child and the process exits naturally.
+    vibe_use_pty: bool = Field(default=False)
+
+    # ---- kas-proxy integration (model-compare via OpenRouter open-weight models) ----
+    # When true, Kiro targets are auto-configured with cost_source=kas_proxy_metrics,
+    # which reads per-turn cost/credits from kas-proxy's metrics.jsonl correlated
+    # by an X-Kas-Run-Id header (set by the harness as the KAS_RUN_ID env var on
+    # each subprocess). Lets a single run capture cost for both Kiro-passthrough
+    # and OpenRouter-routed turns through the same authoritative source.
+    kas_proxy_metrics: bool = Field(default=False)
+    kas_proxy_metrics_file: str | None = Field(
+        default=None,
+        description="Path to metrics.jsonl. None = ~/.kas-proxy/metrics.jsonl",
+    )
+    kas_proxy_metrics_timeout_seconds: float = Field(
+        default=5.0, ge=0.0,
+        description="How long to wait for the proxy to write the per-turn record.",
+    )
 
     # ---- Task discovery ----
     tasks_dir: str = Field(default="tasks")
@@ -667,7 +725,9 @@ class PhaseResult:
     credits: float | None = None          # native Kiro credits
     cost_usd: float | None = None
     input_tokens: int | None = None
+    cached_input_tokens: int | None = None          # tokens from cache (Codex)
     output_tokens: int | None = None
+    reasoning_output_tokens: int | None = None      # Codex o-series reasoning tokens
     premium_requests: float | None = None
     cli_reported_seconds: float | None = None
 
@@ -732,7 +792,9 @@ class RunResult:
     # Cost / usage — ALWAYS recorded both as USD and native units.
     cost_usd: float | None = None
     input_tokens: int | None = None
+    cached_input_tokens: int | None = None          # tokens from cache (Codex)
     output_tokens: int | None = None
+    reasoning_output_tokens: int | None = None      # Codex o-series reasoning tokens
     cli_reported_seconds: float = 0.0
     raw_credits: float | None = None
     premium_requests: float | None = None
@@ -787,7 +849,9 @@ class RunResult:
             "usage": {
                 "cost_usd": self.cost_usd,
                 "input_tokens": self.input_tokens,
+                "cached_input_tokens": self.cached_input_tokens,
                 "output_tokens": self.output_tokens,
+                "reasoning_output_tokens": self.reasoning_output_tokens,
                 "cli_reported_seconds": self.cli_reported_seconds,
                 "wall_clock_seconds": self.duration_seconds,
                 "raw_credits": self.raw_credits,

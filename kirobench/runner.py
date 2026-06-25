@@ -421,8 +421,12 @@ class BenchmarkRunner:
 
         in_vals = [p.input_tokens for p in phases if p.input_tokens is not None]
         out_vals = [p.output_tokens for p in phases if p.output_tokens is not None]
+        cached_vals = [p.cached_input_tokens for p in phases if p.cached_input_tokens is not None]
+        reason_vals = [p.reasoning_output_tokens for p in phases if p.reasoning_output_tokens is not None]
         result.input_tokens = sum(in_vals) if in_vals else None
         result.output_tokens = sum(out_vals) if out_vals else None
+        result.cached_input_tokens = sum(cached_vals) if cached_vals else None
+        result.reasoning_output_tokens = sum(reason_vals) if reason_vals else None
 
         result.cli_reported_seconds = sum(
             p.cli_reported_seconds for p in phases if p.cli_reported_seconds is not None

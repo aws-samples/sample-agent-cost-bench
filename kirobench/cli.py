@@ -330,7 +330,9 @@ def report(results_json, output_dir, no_open):
             tr.final_score = scores.get("final", 0.0)
             tr.cost_usd = usage.get("cost_usd")
             tr.input_tokens = usage.get("input_tokens")
+            tr.cached_input_tokens = usage.get("cached_input_tokens")
             tr.output_tokens = usage.get("output_tokens")
+            tr.reasoning_output_tokens = usage.get("reasoning_output_tokens")
             tr.cli_reported_seconds = usage.get("cli_reported_seconds", 0.0) or 0.0
             tr.raw_credits = usage.get("raw_credits")
             tr.premium_requests = usage.get("premium_requests")

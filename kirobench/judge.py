@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import pty
 import shlex
 import time as _time
 from dataclasses import dataclass, field
@@ -22,6 +23,18 @@ from typing import Any
 
 from .models import BenchConfig
 from .usage import parse_kiro_credits_time
+
+# Cap on captured judge output so a CLI stuck in a redraw loop can't exhaust
+# memory. Excess is dropped but the pty is still drained so it never blocks.
+_MAX_CAPTURE = 5_000_000
+
+
+def _is_kiro_plus_wrapper(cli_path: str) -> bool:
+    """kiro-cli-plus already invokes ``kiro-cli chat --v3`` itself, so callers
+    must NOT append a second ``chat`` token, and the forced ``--v3`` agent does
+    not exit cleanly under plain pipes (it holds a keep-alive socket) so it must
+    run under a PTY. Detect the wrapper by basename (works with absolute paths)."""
+    return bool(cli_path) and cli_path.rstrip("/").endswith("kiro-cli-plus")
 
 
 @dataclass
@@ -100,6 +113,8 @@ class LLMJudge:
         phase: str = "judge",
     ) -> JudgeResult:
         cmd = self._build_command(prompt)
+        cli = self.config.judge_cli_path or self.config.kiro_cli_path
+        use_pty = _is_kiro_plus_wrapper(cli)
         if self._logger:
             await self._logger.log_event(
                 f"JUDGE START  {self._task_id}  model={self._model_label}  "
@@ -108,24 +123,36 @@ class LLMJudge:
 
         start = _time.monotonic()
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=self._build_env(),
-            )
-            try:
-                stdout_b, stderr_b = await asyncio.wait_for(
-                    proc.communicate(), timeout=float(timeout_seconds)
+            if use_pty:
+                # kiro-cli-plus forces the v3 agent, which does not exit cleanly
+                # under plain pipes (keep-alive socket). Run under a PTY so the
+                # master-close signals EOF and the process exits on completion.
+                exit_code, stdout, timed_out = await self._exec_pty(
+                    cmd, float(timeout_seconds), self._build_env()
                 )
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.communicate()
-                return JudgeResult(ok=False, score=neutral, error="Judge timed out")
+                stderr = ""
+                if timed_out:
+                    return JudgeResult(ok=False, score=neutral, error="Judge timed out")
+            else:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdin=asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=self._build_env(),
+                )
+                try:
+                    stdout_b, stderr_b = await asyncio.wait_for(
+                        proc.communicate(), timeout=float(timeout_seconds)
+                    )
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.communicate()
+                    return JudgeResult(ok=False, score=neutral, error="Judge timed out")
+                stdout = stdout_b.decode("utf-8", errors="replace")
+                stderr = stderr_b.decode("utf-8", errors="replace")
+                exit_code = proc.returncode or 0
 
-            stdout = stdout_b.decode("utf-8", errors="replace")
-            stderr = stderr_b.decode("utf-8", errors="replace")
             credits, _ = parse_kiro_credits_time(stdout, stderr)
             parsed = self._extract_json(stdout)
 
@@ -138,7 +165,7 @@ class LLMJudge:
                     prompt=prompt,
                     stdout=stdout,
                     stderr=stderr,
-                    exit_code=proc.returncode or 0,
+                    exit_code=exit_code,
                     duration_seconds=_time.monotonic() - start,
                     credits=credits,
                 )
@@ -164,11 +191,86 @@ class LLMJudge:
         except Exception as e:  # pragma: no cover - defensive
             return JudgeResult(ok=False, score=neutral, error=f"Judge error: {e}")
 
+    async def _exec_pty(
+        self, cmd: list[str], timeout: float, env: dict[str, str]
+    ) -> tuple[int, str, bool]:
+        """Run ``cmd`` attached to a pseudo-terminal and return
+        (exit_code, combined_output, timed_out). stdout+stderr are merged by the
+        PTY. Used for the kiro-cli-plus / v3 judge so the agent exits cleanly."""
+        master_fd, slave_fd = pty.openpty()
+        try:
+            import fcntl
+            import struct
+            import termios
+
+            fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 200, 0, 0))
+        except Exception:
+            pass
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            env=env,
+            start_new_session=True,
+        )
+        os.close(slave_fd)
+
+        loop = asyncio.get_running_loop()
+        reader = asyncio.StreamReader()
+        protocol = asyncio.StreamReaderProtocol(reader)
+        master_file = os.fdopen(master_fd, "rb", buffering=0)
+        transport, _ = await loop.connect_read_pipe(lambda: protocol, master_file)
+
+        captured = bytearray()
+
+        async def _drain() -> None:
+            while True:
+                try:
+                    chunk = await reader.read(65536)
+                except Exception:
+                    break  # pty master raises EIO on slave close — that's EOF
+                if not chunk:
+                    break
+                if len(captured) < _MAX_CAPTURE:
+                    captured.extend(chunk)
+
+        drain_task = asyncio.create_task(_drain())
+
+        timed_out = False
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            timed_out = True
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                pass
+        finally:
+            try:
+                transport.close()
+            except Exception:
+                pass
+            await asyncio.gather(drain_task, return_exceptions=True)
+
+        exit_code = proc.returncode if proc.returncode is not None else -1
+        output = bytes(captured).decode("utf-8", errors="replace")
+        return exit_code, output, timed_out
+
     # ------------------------------------------------------------------
 
     def _build_command(self, prompt: str) -> list[str]:
         cli = self.config.judge_cli_path or self.config.kiro_cli_path
-        cmd = [cli, "chat", "--no-interactive", "--trust-tools="]
+        # kiro-cli-plus already runs `kiro-cli chat --v3`, so adding `chat` here
+        # produces a duplicate `chat` and the long judge prompt is rejected as an
+        # "unexpected argument". Only the plain CLI needs the `chat` subcommand.
+        cmd = [cli] if _is_kiro_plus_wrapper(cli) else [cli, "chat"]
+        cmd += ["--no-interactive", "--trust-tools="]
         if self.config.judge_model:
             cmd.extend(shlex.split(f"--model={self.config.judge_model}"))
         cmd.append(prompt)

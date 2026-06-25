@@ -173,3 +173,44 @@ async def test_spec_prompt_via_stdin(tmp_path, spec_task, monkeypatch):
     cmd = SpecDrivenExecutor(cfg, spec_task, ws, t)._build_command("", extra_args=t.spec_mode_args)
     assert "--mode" in cmd and "spec" in cmd
     assert not any("Implement the feature" in part for part in cmd)
+
+
+
+# ---------------------------------------------------------------------------
+# KAS_RUN_ID injection (Phase 2 integration with kas-proxy)
+# ---------------------------------------------------------------------------
+
+
+def test_build_env_injects_kas_run_id(tmp_path, vibe_task):
+    """``_build_env(run_id=...)`` must put KAS_RUN_ID in the subprocess env so
+    the kas-proxy shim can forward it as an X-Kas-Run-Id header. When no run_id
+    is supplied (legacy callers), KAS_RUN_ID must NOT appear in the env."""
+    t = mock_target()
+    cfg = _cfg([t], tmp_path)
+    ex = VibeExecutor(cfg, vibe_task, tmp_path, t)
+
+    env_with = ex._build_env(run_id="bench-abc-123")
+    assert env_with.get("KAS_RUN_ID") == "bench-abc-123"
+
+    env_without = ex._build_env()
+    assert "KAS_RUN_ID" not in env_without
+
+
+@pytest.mark.asyncio
+async def test_run_cli_turn_returns_unique_run_id_per_call(tmp_path, vibe_task, monkeypatch):
+    """Each call to run_cli_turn generates a fresh correlation id and surfaces
+    it via the return tuple, so the caller can pair the turn with the proxy's
+    metrics record for that id."""
+    monkeypatch.setenv("MOCK_COST_MODE", "kiro")
+    t = mock_target()
+    cfg = _cfg([t], tmp_path)
+    ws = tmp_path / "ws"
+    ws.mkdir(parents=True)
+    ex = VibeExecutor(cfg, vibe_task, ws, t)
+
+    _, _, _, id1 = await ex.run_cli_turn("PROMPT")
+    _, _, _, id2 = await ex.run_cli_turn("PROMPT")
+    assert id1 and id2
+    assert id1 != id2
+    # uuid4 hex is 32 lowercase hex chars
+    assert len(id1) == 32 and len(id2) == 32
