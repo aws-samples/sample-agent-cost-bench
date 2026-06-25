@@ -19,7 +19,6 @@ comparison_label: Sonnet 4.6 (Kiro / Claude Code / Copilot) vs GPT-5.5 (Codex)
 # judge_model: claude-opus-4.8
 # judge_cli_path: kiro-cli
 # judge_weight: 0.6
-effort: high
 
 runners:
   # ── Kiro CLI (claude-sonnet-4.6) ──────────────────────────────────────────
@@ -81,7 +80,7 @@ runners:
 
 # Task discovery (cli-compare is vibe-only; spec tasks are skipped)
 tasks_dir: tasks
-task_ids: [dashboard]
+task_ids:
 modes: ["vibe"]
 
 # LLM-as-judge

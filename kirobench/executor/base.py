@@ -163,11 +163,13 @@ class BaseExecutor:
 
     def _build_command(self, prompt: str, agent: str | None = None, extra_args: list[str] | None = None) -> list[str]:
         t = self.target
+        # Per-task effort takes precedence over the run-level default.
+        effort = getattr(self.task, "effort", None) or self.config.effort or "high"
         cmd: list[str] = [t.cli_path]
         prompt_used = False
         for arg in t.cli_base_args:
             rendered = arg.format(
-                model=t.model_id, prompt=prompt, agent=agent or "", effort=self.config.effort
+                model=t.model_id, prompt=prompt, agent=agent or "", effort=effort
             )
             if "{prompt}" in arg:
                 prompt_used = True
@@ -181,8 +183,8 @@ class BaseExecutor:
             cmd.extend(shlex.split(t.cli_model_flag.format(model=t.model_id)))
         if agent and t.cli_agent_flag and t.capabilities.supports_agents:
             cmd.extend(shlex.split(t.cli_agent_flag.format(agent=agent)))
-        if self.config.effort and t.cli_effort_flag:
-            cmd.extend(shlex.split(t.cli_effort_flag.format(effort=self.config.effort)))
+        if effort and t.cli_effort_flag:
+            cmd.extend(shlex.split(t.cli_effort_flag.format(effort=effort)))
 
         cmd.extend(t.extra_args)
 

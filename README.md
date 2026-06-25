@@ -96,6 +96,7 @@ Any task can reference a GitHub repository. The framework clones it (cached acro
 id: fix-my-auth-bug
 mode: vibe
 prompt: "Fix the failing test in tests/test_auth.py"
+effort: medium            # low / medium / high — per-task, based on complexity
 repo:
   url: https://github.com/my-org/my-service.git
   ref: a1b2c3d4e5f6...   # pin to a commit SHA for reproducibility
@@ -104,6 +105,20 @@ verify:
   runner: pytest
   deps: [pytest, httpx]
 ```
+
+### Effort level
+
+Set `effort` in each task's `task.yaml` to control how much reasoning the model applies:
+
+```yaml
+# Simple formatting task — low reasoning is fine
+effort: low
+
+# Complex multi-file refactor — give the model time to think
+effort: high
+```
+
+Valid values: `low`, `medium`, `high` (default: `high`). A run-level fallback (`effort:` in the main config) still works for backward compatibility — per-task settings override it.
 
 ### Useful commands
 

@@ -463,8 +463,10 @@ class TaskConfig(BaseModel):
     # The task prompt, inline in task.yaml.
     prompt: str = ""
     timeout_minutes: int = 15
-    # NOTE: effort is NOT a per-task setting — it comes from the run config
-    # (BenchConfig.effort) so every task in a run uses the same effort level.
+    # Per-task effort level (low/medium/high). Controls how much reasoning the
+    # model applies. When set, overrides the run-level default from the config.
+    # Leave unset (None) to inherit the config's effort for backward compat.
+    effort: str | None = Field(default=None)
     trust_tools: list[str] = Field(default=["read", "write", "shell"])
 
     # Minimum graduated functional score (0.0–1.0) for a PASS on tasks that
@@ -530,7 +532,10 @@ class BenchConfig(BaseModel):
     # ---- Kiro connection / model-compare agents (ignored by cli-compare) ----
     kiro_api_key: str = Field(default="")
     kiro_cli_path: str = Field(default="kiro")
-    effort: str = Field(default="high")
+    effort: str = Field(
+        default="high",
+        description="Default effort level; per-task effort in task.yaml takes precedence.",
+    )
     vibe_agent: str | None = Field(default=None)
     spec_driver_agent: str | None = Field(default=None)
     spec_executor_agent: str | None = Field(default=None)

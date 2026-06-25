@@ -2,6 +2,7 @@ id: bedrock-sentiment
 mode: vibe
 description: "Migrate tweet-text sentiment analysis from Amazon Comprehend to Amazon Bedrock in the aws-samples serverless face-recognition demo"
 timeout_minutes: 20
+effort: high
 
 # 6 of 8 criteria must be met to pass (75%).
 functional_pass_threshold: 0.75

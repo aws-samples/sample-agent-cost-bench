@@ -1,6 +1,7 @@
 id: rest-api
 description: "Build a simple REST API in Python (FastAPI) with CRUD endpoints for a Todo list"
 timeout_minutes: 10
+effort: medium
 prompt: |
   Create a REST API using FastAPI with the following endpoints for a Todo list:
 

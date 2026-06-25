@@ -1,6 +1,7 @@
 id: log-analyzer-cli
 description: "Greenfield Python CLI: parse Common Log Format access logs into a JSON summary (status classes, top IPs, total bytes)"
 timeout_minutes: 15
+effort: low
 prompt: |
   Build a command-line log analyzer in Python.
 

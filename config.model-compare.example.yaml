@@ -6,7 +6,7 @@
 
 kiro_cli_path: kiro-cli
 kiro_api_key: ${KIRO_API_KEY:-}   # optional; falls back to the CLI login session
-effort: high
+effort: high   # default for tasks that don't set their own effort in task.yaml
 
 # Spec-driven tasks run natively in a single CLI invocation. These args are
 # injected ONLY for spec tasks (vibe tasks are unaffected). `--mode spec`
