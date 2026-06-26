@@ -80,7 +80,7 @@ runners:
 
 # Task discovery (cli-compare is vibe-only; spec tasks are skipped)
 tasks_dir: tasks
-task_ids: [dashboard]
+task_ids: 
 modes: ["vibe"]
 
 # LLM-as-judge
