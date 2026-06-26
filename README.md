@@ -35,7 +35,7 @@ Cost is always reported two ways: USD and native units (credits / AI Credits / t
 ## Install
 
 ```bash
-cd kiro-benchmark-framework
+cd agent-cost-bench
 pip install -e .            # installs the `agent-cost-bench` command
 pip install -e ".[dev]"     # optional: dev/test extras
 ```
