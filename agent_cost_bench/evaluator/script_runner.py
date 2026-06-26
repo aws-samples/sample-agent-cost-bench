@@ -69,7 +69,9 @@ class ScriptVerifyRunner:
             )
 
         try:
-            proc = await asyncio.create_subprocess_exec(
+            # Security: cmd is [venv_python, scorer_path, workspace, task_dir].
+            # All paths are harness-controlled. Array-based exec, no shell.
+            proc = await asyncio.create_subprocess_exec(  # noqa: S603
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -143,7 +145,9 @@ class ScriptVerifyRunner:
 
     async def _sh(self, cmd, timeout: float = 300.0) -> bool:
         try:
-            proc = await asyncio.create_subprocess_exec(
+            # Security: cmd is static tool invocations (python3, uv, pip).
+            # Array-based exec, no shell.
+            proc = await asyncio.create_subprocess_exec(  # noqa: S603
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,

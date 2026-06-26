@@ -30,6 +30,8 @@ Cost is always reported two ways: USD and native units (credits / AI Credits / t
 - **Docker** — only if you run the multi-language tasks (C#/.NET, Java,
   TypeScript, Terraform, Helm). Build images once with `./tasks/docker/build-images.sh`.
 
+> **Cost warning:** Each CLI you benchmark requires your own active subscription or license (Kiro, Claude Code, GitHub Copilot, OpenAI Codex, etc.). Running benchmarks consumes credits, tokens, or premium requests against your account. A full run across all tasks can use significant resources. Start with a small subset (`task_ids:`) to estimate cost before running the full suite.
+
 ## Install
 
 ```bash

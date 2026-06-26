@@ -693,9 +693,10 @@ def _validate_docker(tasks) -> None:
 def _open_file(path: Path) -> None:
     try:
         if sys.platform == "darwin":
-            subprocess.run(["open", str(path)], check=False)
+            # Security: "open" is a static binary; path is a local file we just wrote.
+            subprocess.run(["open", str(path)], check=False)  # noqa: S603
         elif sys.platform.startswith("linux"):
-            subprocess.run(["xdg-open", str(path)], check=False)
+            subprocess.run(["xdg-open", str(path)], check=False)  # noqa: S603
         elif sys.platform == "win32":
             # os.startfile avoids spawning a shell (no shell=True), so a crafted
             # path can't be interpreted as a command.

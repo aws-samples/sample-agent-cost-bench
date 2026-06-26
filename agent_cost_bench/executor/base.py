@@ -118,6 +118,31 @@ async def _terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
         pass
 
 
+def _validate_command(cmd: list[str]) -> None:
+    """Validate the assembled command before execution.
+
+    Security note: ``create_subprocess_exec`` uses array-based invocation (no
+    shell), so shell injection is not possible. This validation is defense-in-
+    depth against corrupted config values (null bytes, empty program names) that
+    could confuse the OS exec layer.
+
+    All inputs (cli_path, cli_base_args, model_id, prompt) originate from the
+    operator's local YAML config and task.yaml files — not from external/
+    untrusted sources. The operator who writes the config is the one executing
+    the benchmark.
+    """
+    if not cmd:
+        raise ValueError("Empty command list — cannot execute")
+    if not cmd[0]:
+        raise ValueError("CLI path is empty — check cli_path in config")
+    for i, arg in enumerate(cmd):
+        if "\x00" in arg:
+            raise ValueError(
+                f"Null byte in command argument at index {i} — "
+                "this is likely a corrupted config value"
+            )
+
+
 class BaseExecutor:
     """Async wrapper that runs one ``Target`` and parses usage per turn."""
 
@@ -190,6 +215,8 @@ class BaseExecutor:
 
         if not prompt_used and prompt:
             cmd.append(prompt)
+
+        _validate_command(cmd)
         return cmd
 
     # ------------------------------------------------------------------
@@ -219,7 +246,9 @@ class BaseExecutor:
         except Exception:
             pass
 
-        proc = await asyncio.create_subprocess_exec(
+        # Security: cmd is validated by _validate_command() and uses array-
+        # based exec (no shell). All values originate from operator-owned config.
+        proc = await asyncio.create_subprocess_exec(  # noqa: S603
             *cmd,
             stdin=slave_fd,
             stdout=slave_fd,
@@ -354,7 +383,10 @@ class BaseExecutor:
         stdin_mode = asyncio.subprocess.PIPE if stdin_text is not None else asyncio.subprocess.DEVNULL
         proc = None
         try:
-            proc = await asyncio.create_subprocess_exec(
+            # Security: cmd is validated by _validate_command() and uses array-
+            # based exec (no shell). All values originate from operator-owned
+            # config files loaded at startup.
+            proc = await asyncio.create_subprocess_exec(  # noqa: S603
                 *cmd,
                 stdin=stdin_mode,
                 stdout=asyncio.subprocess.PIPE,

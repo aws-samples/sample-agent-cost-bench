@@ -157,7 +157,9 @@ class FunctionalEvaluator:
                     f"    workspace: {self.workspace}"
                 )
 
-            proc = await asyncio.create_subprocess_exec(
+            # Security: cmd is ["bash", verify_script] where verify_script is a
+            # harness-owned file path from the task's verify/ dir. No shell.
+            proc = await asyncio.create_subprocess_exec(  # noqa: S603
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,

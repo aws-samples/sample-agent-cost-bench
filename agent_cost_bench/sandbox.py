@@ -104,7 +104,9 @@ def _run_git(*args: str, cwd: str | None = None, env: dict | None = None) -> Non
     header. The token never appears in ``args``, so the failure message below is
     safe to surface."""
     cmd = ["git", *args]
-    result = subprocess.run(
+    # Security: array-based exec (no shell). args are static git subcommands
+    # and paths derived from operator-owned task.yaml repo specs.
+    result = subprocess.run(  # noqa: S603
         cmd, capture_output=True, text=True, timeout=300, cwd=cwd,
         env=env if env is not None else _git_base_env(),
     )

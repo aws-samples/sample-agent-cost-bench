@@ -189,7 +189,9 @@ class PytestSuiteRunner:
 
     async def _sh(self, cmd, cwd=None, env=None, timeout: float = 300.0) -> bool:
         try:
-            proc = await asyncio.create_subprocess_exec(
+            # Security: cmd is static tool invocations (python3, uv, pip, pytest).
+            # Array-based exec, no shell.
+            proc = await asyncio.create_subprocess_exec(  # noqa: S603
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,

@@ -36,9 +36,20 @@ def check_targets_available(config: BenchConfig) -> list[str]:
 
 def list_available_models(config: BenchConfig) -> list[str] | None:
     """Query the Kiro CLI for valid model ids, or None if it can't be queried."""
-    cmd = [config.kiro_cli_path, "chat", "--list-models", "--format", "json"]
+    cli_path = config.kiro_cli_path
+    # Validate: resolve the binary via PATH to ensure it exists and reject
+    # paths containing null bytes (defense-in-depth against corrupted config).
+    resolved = shutil.which(cli_path) if cli_path and "\x00" not in cli_path else None
+    if resolved is None:
+        return None
+    cmd = [resolved, "chat", "--list-models", "--format", "json"]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        # Security: cmd[0] is resolved via shutil.which above (no shell);
+        # remaining args are static literals. Input originates from the
+        # operator's own config file.
+        proc = subprocess.run(  # noqa: S603
+            cmd, capture_output=True, text=True, timeout=60
+        )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
     if proc.returncode != 0 or not proc.stdout.strip():

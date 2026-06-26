@@ -142,7 +142,9 @@ class RubricEvaluator:
             str(baseline), str(self.workspace),
         ]
         try:
-            proc = await asyncio.create_subprocess_exec(
+            # Security: cmd is ["git", "diff", "--no-index", ...] with static
+            # flags and harness-controlled paths. Array-based exec, no shell.
+            proc = await asyncio.create_subprocess_exec(  # noqa: S603
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,

@@ -134,7 +134,9 @@ class LLMJudge:
                 if timed_out:
                     return JudgeResult(ok=False, score=neutral, error="Judge timed out")
             else:
-                proc = await asyncio.create_subprocess_exec(
+                # Security: cmd is assembled from operator config (judge_cli_path
+                # + static args + model_id). Array-based exec, no shell.
+                proc = await asyncio.create_subprocess_exec(  # noqa: S603
                     *cmd,
                     stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
@@ -207,7 +209,8 @@ class LLMJudge:
         except Exception:
             pass
 
-        proc = await asyncio.create_subprocess_exec(
+        # Security: cmd from operator config (judge_cli_path). Array-based exec.
+        proc = await asyncio.create_subprocess_exec(  # noqa: S603
             *cmd,
             stdin=slave_fd,
             stdout=slave_fd,

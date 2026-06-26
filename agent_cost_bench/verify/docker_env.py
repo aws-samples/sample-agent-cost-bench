@@ -20,7 +20,9 @@ import subprocess
 def _present(image: str, env: dict | None) -> bool:
     """True if ``image`` exists in the daemon reachable with ``env``."""
     try:
-        p = subprocess.run(
+        # Security: "docker" is resolved from PATH; "image", "ls", "-q" are
+        # static. `image` comes from task.yaml verify.image (operator-owned).
+        p = subprocess.run(  # noqa: S603
             ["docker", "image", "ls", "-q", image],
             capture_output=True, text=True, timeout=20, env=env,
         )
@@ -31,7 +33,8 @@ def _present(image: str, env: dict | None) -> bool:
 
 def list_contexts() -> list[str]:
     try:
-        out = subprocess.run(
+        # Security: fully static command, no external input.
+        out = subprocess.run(  # noqa: S603
             ["docker", "context", "ls", "-q"],
             capture_output=True, text=True, timeout=20,
         ).stdout.split()
@@ -82,8 +85,9 @@ def resolve_docker_env(image: str) -> dict | None:
 def docker_available(env: dict | None = None) -> bool:
     """True if the Docker CLI is installed and a daemon is reachable."""
     try:
+        # Security: fully static command, no external input.
         return (
-            subprocess.run(
+            subprocess.run(  # noqa: S603
                 ["docker", "version", "--format", "{{.Server.Version}}"],
                 capture_output=True, timeout=20, env=env,
             ).returncode
@@ -97,7 +101,11 @@ def diagnostic(image: str) -> str:
     """Human-readable diagnostic of what Docker the subprocess sees (for logs)."""
     def _run(args, env=None):
         try:
-            p = subprocess.run(args, capture_output=True, text=True, timeout=20, env=env)
+            # Security: args are static docker CLI commands or the image name
+            # from operator-owned task.yaml. Array-based exec, no shell.
+            p = subprocess.run(  # noqa: S603
+                args, capture_output=True, text=True, timeout=20, env=env
+            )
             return (p.stdout or p.stderr).strip()
         except Exception as e:  # pragma: no cover
             return f"<error: {e}>"

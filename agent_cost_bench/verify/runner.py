@@ -101,7 +101,9 @@ exit $ec
             )
 
         try:
-            proc = await asyncio.create_subprocess_exec(
+            # Security: cmd is ["docker", "run", ...] with image name from
+            # task.yaml (operator-owned) and static docker flags. No shell.
+            proc = await asyncio.create_subprocess_exec(  # noqa: S603
                 *cmd,
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
