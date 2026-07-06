@@ -190,11 +190,28 @@ class BaseExecutor:
         t = self.target
         # Per-task effort takes precedence over the run-level default.
         effort = getattr(self.task, "effort", None) or self.config.effort or "high"
+        # Cursor encodes effort as a suffix on the model slug (e.g.
+        # "claude-opus-4-8" + "-high" → "claude-opus-4-8-high") rather than a
+        # separate --effort flag.  When cost_source is cursor_json AND the
+        # configured model_id doesn't already contain the effort level, append
+        # it so the correct model is selected server-side.
+        model_id = t.model_id
+        if t.cost_source == CostSource.CURSOR_JSON and effort:
+            # Don't double-append if the user already baked the effort into model_id.
+            _CURSOR_EFFORT_SUFFIXES = (
+                "-low", "-medium", "-high", "-xhigh", "-max",
+                "-low-fast", "-medium-fast", "-high-fast", "-xhigh-fast", "-max-fast",
+                "-thinking-low", "-thinking-medium", "-thinking-xhigh", "-thinking-max",
+                "-thinking-low-fast", "-thinking-medium-fast", "-thinking-xhigh-fast", "-thinking-max-fast",
+            )
+            if not any(model_id.endswith(sfx) for sfx in _CURSOR_EFFORT_SUFFIXES):
+                model_id = f"{model_id}-{effort}"
+
         cmd: list[str] = [t.cli_path]
         prompt_used = False
         for arg in t.cli_base_args:
             rendered = arg.format(
-                model=t.model_id, prompt=prompt, agent=agent or "", effort=effort
+                model=model_id, prompt=prompt, agent=agent or "", effort=effort
             )
             if "{prompt}" in arg:
                 prompt_used = True
@@ -205,7 +222,7 @@ class BaseExecutor:
             cmd.extend(extra_args)
 
         if t.cli_model_flag:
-            cmd.extend(shlex.split(t.cli_model_flag.format(model=t.model_id)))
+            cmd.extend(shlex.split(t.cli_model_flag.format(model=model_id)))
         if agent and t.cli_agent_flag and t.capabilities.supports_agents:
             cmd.extend(shlex.split(t.cli_agent_flag.format(agent=agent)))
         if effort and t.cli_effort_flag:
@@ -599,8 +616,10 @@ class VibeExecutor(BaseExecutor):
                     error=f"No prompt found: set 'prompt:' in task.yaml for task in {where}",
                 )
             ]
+        # Per-target requires_pty takes precedence; fall back to global vibe_use_pty.
+        use_pty = self.target.capabilities.requires_pty or self.config.vibe_use_pty
         return [await self.run_phase(
             "vibe", prompt,
             agent=self.config.vibe_agent,
-            use_pty=self.config.vibe_use_pty,
+            use_pty=use_pty,
         )]

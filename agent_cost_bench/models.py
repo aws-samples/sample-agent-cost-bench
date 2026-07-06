@@ -99,6 +99,7 @@ class CostSource(str, Enum):
     CLAUDE_JSON = "claude_json"          # parse `claude -p --output-format json` total_cost_usd
     COPILOT_JSON = "copilot_json"        # parse `copilot --output-format json` JSONL + session-state AIU
     CODEX_JSON = "codex_json"            # parse `codex exec --json` JSONL turn.completed events
+    CURSOR_JSON = "cursor_json"          # parse `cursor -p --output-format json` result event
     TOKENS = "tokens"                    # parse token counts via regex, price per-token
     PREMIUM_REQUEST = "premium_request"  # fixed N premium/credit requests per run × price
     KAS_PROXY_METRICS = "kas_proxy_metrics"  # read kas-proxy's metrics.jsonl, correlated by run_id
@@ -133,9 +134,18 @@ class Pricing(BaseModel):
     usd_per_cached_input_token: float | None = Field(
         default=None,
         description=(
-            "USD per cached input token (codex_json cost_source). "
+            "USD per cached input token read from cache (codex_json / cursor_json). "
             "When None, cached tokens are billed at the regular input rate. "
             "For Codex o4-mini (standard): $0.275/1M = $0.000000275/token."
+        ),
+    )
+    usd_per_cache_write_token: float | None = Field(
+        default=None,
+        description=(
+            "USD per cache write token (cursor_json cost_source). "
+            "Cursor bills cache writes at a separate rate from regular input. "
+            "For Cursor Opus 4.8: $6.25/1M = $0.00000625/token. "
+            "When None, cache write tokens are billed at the regular input rate."
         ),
     )
     usd_per_output_token: float | None = Field(
@@ -202,6 +212,11 @@ class TargetCapabilities(BaseModel):
     )
     supports_agents: bool = Field(
         default=False, description="CLI accepts a per-phase --agent flag (Kiro)"
+    )
+    requires_pty: bool = Field(
+        default=False,
+        description="CLI requires a pseudo-terminal to run without hanging "
+        "(e.g. Cursor CLI blocks on stdout when no TTY is attached)",
     )
 
 

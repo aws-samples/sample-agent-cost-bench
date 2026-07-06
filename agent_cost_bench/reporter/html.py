@@ -1,7 +1,7 @@
 """
 HTML reporter with two render paths sharing common templates and styling:
 
-* cli-compare   — cost-per-success (cheapest first), latency, per-target Model
+* cli-compare   — cost-per-success (cheapest first), duration, per-target Model
   column, charts, transcripts.
 * model-compare — pass rate, 4-dimension quality table, cost + credits, pass@k,
   mode breakdown, drill-downs.
@@ -248,6 +248,7 @@ class HTMLReporter:
             "chart_functional": json.dumps([round(s["avg_functional"] * 100, 1) for s in model_stats]),
             "chart_credits": json.dumps([round(s["avg_credits"], 3) for s in model_stats]),
             "chart_cost": json.dumps([round(s["avg_cost_usd"], 5) for s in model_stats]),
+            "kas_proxy_metrics": run.config.kas_proxy_metrics,
         }
 
     def _model_result_rows(self, run: BenchmarkRun) -> list[dict]:
@@ -277,6 +278,9 @@ class HTMLReporter:
                 "final_score": r.final_score,
                 "credits": r.total_credits,
                 "cost_usd": r.cost_usd,
+                "input_tokens": r.input_tokens,
+                "output_tokens": r.output_tokens,
+                "cached_input_tokens": r.cached_input_tokens,
                 "cli_time": r.cli_reported_seconds or r.duration_seconds,
                 "repeat": r.repeat,
                 "retries": r.transient_retries,

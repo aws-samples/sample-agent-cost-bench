@@ -2,6 +2,18 @@
 #
 #   agent-cost-bench cli-compare run config.cli-compare.example.yaml
 #
+# Authentication: each CLI reads its API key from the standard env var that the
+# CLI itself expects. Set these in your shell before running the benchmark:
+#
+#   export KIRO_API_KEY=...          # Kiro (or use `kiro login`)
+#   export ANTHROPIC_API_KEY=...     # Claude Code (or use `claude login`)
+#   export GITHUB_TOKEN=...          # Copilot (or use `copilot auth login`)
+#   export CURSOR_API_KEY=...        # Cursor (or use `cursor login`)
+#   export OPENAI_API_KEY=...        # Codex (or use `codex auth login`)
+#
+# The harness inherits the parent shell's environment, so all CLIs pick up
+# their keys automatically — no per-runner `env:` block needed.
+#
 # `comparison_label` is a reporting headline only — it names what this run
 # compares. Optional; defaults to "cross-CLI comparison".
 #
@@ -10,9 +22,10 @@
 #   claude           → claude_json
 #   copilot          → copilot_json
 #   codex            → codex_json
+#   cursor           → cursor_json
 # You can still set it explicitly if needed, but in most cases it's not required.
 
-comparison_label: Sonnet 4.6 (Kiro / Claude Code / Copilot) vs GPT-5.5 (Codex)
+comparison_label: Opus 4.8 (Kiro / Claude Code / Copilot / Cursor)
 
 # LLM-as-judge for rubric tasks (optional — only needed if task_ids includes
 # rubric tasks like bedrock-sentiment that have quality.rubric).
@@ -21,62 +34,98 @@ comparison_label: Sonnet 4.6 (Kiro / Claude Code / Copilot) vs GPT-5.5 (Codex)
 # judge_weight: 0.6
 
 runners:
-  # ── Kiro CLI (claude-sonnet-4.6) ──────────────────────────────────────────
+  # ── Kiro CLI (claude-opus-4.8) ────────────────────────────────────────────
   - name: kiro
-    display_name: "Kiro (claude-sonnet-4.6)"
+    display_name: "Kiro (claude-opus-4.8)"
     cli_path: kiro-cli
-    model_id: claude-sonnet-4.6
+    model_id: claude-opus-4.8
     pricing:
       usd_per_credit: 0.04
     cli_base_args: [chat, --no-interactive, --trust-all-tools,
                     "--model={model}", "--effort={effort}"]
 
-  # ── Claude Code (claude-sonnet-4.6) ───────────────────────────────────────
+  # ── Claude Code (claude-opus-4.8) ─────────────────────────────────────────
   # cost is read directly from --output-format json (total_cost_usd field)
   - name: claude-code
-    display_name: "Claude Code (claude-sonnet-4.6)"
+    display_name: "Claude Code (claude-opus-4.8)"
     cli_path: claude
-    model_id: us.anthropic.claude-sonnet-4-6
+    model_id: us.anthropic.claude-opus-4-8
     cli_base_args: ["-p", "{prompt}", "--output-format", "json",
                     "--model", "{model}", "--dangerously-skip-permissions",
                     "--effort", "{effort}"]
 
-  # ── GitHub Copilot (claude-sonnet-4.6) ────────────────────────────────────
+  # ── GitHub Copilot (claude-opus-4.8) ──────────────────────────────────────
   - name: copilot
-    display_name: "GitHub Copilot (claude-sonnet-4.6)"
+    display_name: "GitHub Copilot (claude-opus-4.8)"
     cli_path: copilot
-    model_id: claude-sonnet-4.6
+    model_id: claude-opus-4.8
     pricing:
       usd_per_premium_request: 0.04   # fallback if session-state AIU unavailable
     cli_base_args: ["-p", "{prompt}", "--model", "{model}",
                     "--allow-all-tools", "--output-format", "json",
                     "--effort", "{effort}"]
 
-  # ── OpenAI Codex (gpt-5.5) ────────────────────────────────────────────────
-  # Pricing reference: https://developers.openai.com/api/docs/pricing?latest-pricing=standard
-  # gpt-5.5 standard rates (per 1M tokens): input $5.00 / cached $0.50 / output $30.00
+  # ── Cursor (claude-opus-4.8-thinking-max) ─────────────────────────────────
+  # Cursor encodes effort/thinking as part of the model slug, not a separate
+  # flag. The harness automatically appends the task's effort level to the
+  # model_id below (e.g. model_id "claude-opus-4-8" + effort "high" →
+  # "claude-opus-4-8-high"). If you bake the effort into model_id yourself
+  # (e.g. "claude-opus-4-8-thinking-max"), no suffix is appended.
   #
-  # Formula:  cost = (input - cached) / 1M × input_rate
-  #                + cached           / 1M × cached_input_rate
-  #                + output           / 1M × output_rate
-  # Note: reasoning_output_tokens is a subset of output_tokens, not extra.
-  - name: codex
-    display_name: "OpenAI Codex (gpt-5.5)"
-    cli_path: codex
-    model_id: gpt-5.5
+  # Model slug reference (Opus 4.8):
+  #   claude-opus-4-8-low               = Low
+  #   claude-opus-4-8-medium            = Medium
+  #   claude-opus-4-8-high              = High (default)
+  #   claude-opus-4-8-xhigh            = Extra High
+  #   claude-opus-4-8-max               = Max
+  #   claude-opus-4-8-thinking-low      = Low Thinking
+  #   claude-opus-4-8-thinking-medium   = Medium Thinking
+  #   claude-opus-4-8-thinking-xhigh   = Extra High Thinking
+  #   claude-opus-4-8-thinking-max      = Max Thinking
+  #   Append "-fast" for fast variants
+  #
+  # Pricing: from https://cursor.com/docs/models-and-pricing (API pool)
+  # Opus 4.8: Input $5/M, Cache Write $6.25/M, Cache Read $0.50/M, Output $25/M
+  - name: cursor
+    display_name: "Cursor (claude-opus-4.8)"
+    cli_path: agent
+    model_id: claude-opus-4-8
+    cost_source: cursor_json
     pricing:
-      usd_per_input_token:        0.000005     # $5.00  / 1M
-      usd_per_cached_input_token: 0.0000005    # $0.50  / 1M
-      usd_per_output_token:       0.000030     # $30.00 / 1M
-    cli_base_args:
-      - "exec"
-      - "--json"
-      - "--ephemeral"
-      - "--skip-git-repo-check"
-      - "--dangerously-bypass-approvals-and-sandbox"
-      - "-m"
-      - "{model}"
-      - "{prompt}"
+      usd_per_input_token:        0.000005     # $5.00  / 1M (fresh input)
+      usd_per_cache_write_token:  0.00000625   # $6.25  / 1M (cache write)
+      usd_per_cached_input_token: 0.0000005    # $0.50  / 1M (cache read)
+      usd_per_output_token:       0.000025     # $25.00 / 1M
+    capabilities:
+      requires_pty: true
+    cli_base_args: ["-p", "{prompt}", "--trust","--yolo", "--output-format", "json",
+                    "--model", "{model}"]
+
+  # # ── OpenAI Codex (gpt-5.5) ────────────────────────────────────────────────
+  # # Pricing reference: https://developers.openai.com/api/docs/pricing?latest-pricing=standard
+  # # gpt-5.5 standard rates (per 1M tokens): input $5.00 / cached $0.50 / output $30.00
+  # #
+  # # Formula:  cost = (input - cached) / 1M × input_rate
+  # #                + cached           / 1M × cached_input_rate
+  # #                + output           / 1M × output_rate
+  # # Note: reasoning_output_tokens is a subset of output_tokens, not extra.
+  # - name: codex
+  #   display_name: "OpenAI Codex (gpt-5.5)"
+  #   cli_path: codex
+  #   model_id: gpt-5.5
+  #   pricing:
+  #     usd_per_input_token:        0.000005     # $5.00  / 1M
+  #     usd_per_cached_input_token: 0.0000005    # $0.50  / 1M
+  #     usd_per_output_token:       0.000030     # $30.00 / 1M
+  #   cli_base_args:
+  #     - "exec"
+  #     - "--json"
+  #     - "--ephemeral"
+  #     - "--skip-git-repo-check"
+  #     - "--dangerously-bypass-approvals-and-sandbox"
+  #     - "-m"
+  #     - "{model}"
+  #     - "{prompt}"
 
 # Task discovery (cli-compare is vibe-only; spec tasks are skipped)
 tasks_dir: tasks
@@ -97,5 +146,5 @@ workspace_base: /tmp/agent-cost-bench-cli-compare
 
 # Reporting
 output_dir: results
-report_title: "Benchmark Analysis: Sonnet 4.6 (Kiro / Claude Code / Copilot) vs GPT-5.5 (Codex)"
+report_title: "Benchmark Analysis: Opus 4.8 (Kiro vs Claude Code vs Copilot vs Cursor)"
 open_report: true

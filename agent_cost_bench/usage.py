@@ -611,6 +611,108 @@ def parse_codex_usage(stdout: str, stderr: str, pricing: Pricing) -> Usage:
 
 
 
+# ---------------------------------------------------------------------------
+# Cursor CLI JSON (`cursor -p --output-format json`)
+# ---------------------------------------------------------------------------
+
+
+def parse_cursor_usage(stdout: str, stderr: str, pricing: Pricing) -> Usage:
+    """Parse the Cursor CLI headless JSON result.
+
+    Cursor's ``-p --output-format json`` emits a single JSON object (or the last
+    line in stream-json mode) with ``type: "result"`` containing::
+
+        {
+          "type": "result",
+          "duration_ms": 40428,
+          "duration_api_ms": 40428,
+          "is_error": false,
+          "usage": {
+            "inputTokens": 28223,
+            "outputTokens": 4075,
+            "cacheReadTokens": 141280,
+            "cacheWriteTokens": 0
+          }
+        }
+
+    Cost formula (mirrors Codex/Anthropic billing)::
+
+        uncached_input = inputTokens - cacheReadTokens
+        cost = uncached_input    × usd_per_input_token
+             + cacheReadTokens   × usd_per_cached_input_token
+             + outputTokens      × usd_per_output_token
+
+    When ``usd_per_cached_input_token`` is absent, cached tokens are billed at
+    the regular input rate (conservative fallback).
+
+    Cursor's pricing is "public list API prices + $0.25/M total tokens" so the
+    YAML should encode the effective per-token rates inclusive of that markup.
+    """
+    objs = _find_json_objects(stdout) or _find_json_objects(stderr)
+    result_obj = None
+    for o in objs:
+        if o.get("type") == "result":
+            result_obj = o
+    if result_obj is None and objs:
+        result_obj = objs[-1]
+    if not result_obj:
+        return Usage()
+
+    # Duration: prefer duration_api_ms (model time), fall back to duration_ms
+    duration_api = result_obj.get("duration_api_ms")
+    duration_total = result_obj.get("duration_ms")
+    duration_ms = duration_api if isinstance(duration_api, (int, float)) else duration_total
+    seconds = (duration_ms / 1000.0) if isinstance(duration_ms, (int, float)) else None
+
+    # Token usage
+    usage = result_obj.get("usage") or {}
+    in_tok = _safe_int(usage.get("inputTokens"))
+    out_tok = _safe_int(usage.get("outputTokens"))
+    cache_read = _safe_int(usage.get("cacheReadTokens"))
+    cache_write = _safe_int(usage.get("cacheWriteTokens"))
+
+    # Cursor's inputTokens is the NON-cached fresh input (not a total that
+    # includes cache reads). Total input processed = inputTokens + cacheReadTokens
+    # + cacheWriteTokens.
+    total_in = None
+    if in_tok is not None:
+        total_in = in_tok + (cache_read or 0) + (cache_write or 0)
+
+    # Cost computation per Cursor pricing (https://cursor.com/docs/models-and-pricing):
+    #   inputTokens      → billed at usd_per_input_token (Input rate)
+    #   cacheWriteTokens → billed at usd_per_cache_write_token (Cache Write rate)
+    #   cacheReadTokens  → billed at usd_per_cached_input_token (Cache Read rate)
+    #   outputTokens     → billed at usd_per_output_token
+    cost = None
+    p_in = pricing.usd_per_input_token
+    p_out = pricing.usd_per_output_token
+    if p_in is not None and p_out is not None and in_tok is not None and out_tok is not None:
+        p_cache_read = (
+            pricing.usd_per_cached_input_token
+            if pricing.usd_per_cached_input_token is not None
+            else p_in
+        )
+        p_cache_write = (
+            pricing.usd_per_cache_write_token
+            if pricing.usd_per_cache_write_token is not None
+            else p_in
+        )
+        cost = (
+            in_tok * p_in
+            + (cache_write or 0) * p_cache_write
+            + (cache_read or 0) * p_cache_read
+            + out_tok * p_out
+        )
+
+    return Usage(
+        cost_usd=cost,
+        input_tokens=total_in,
+        cached_input_tokens=(cache_read or 0) + (cache_write or 0) if cache_read is not None or cache_write is not None else None,
+        output_tokens=out_tok,
+        seconds=seconds,
+    )
+
+
 def parse_token_regex_usage(
     stdout: str, stderr: str, pricing: Pricing, token_regex: str | None
 ) -> Usage:
@@ -675,6 +777,8 @@ def parse_usage(
         return parse_copilot_usage(stdout, stderr, p, home=home)
     if src == CostSource.CODEX_JSON:
         return parse_codex_usage(stdout, stderr, p)
+    if src == CostSource.CURSOR_JSON:
+        return parse_cursor_usage(stdout, stderr, p)
     if src == CostSource.KAS_PROXY_METRICS:
         return parse_kas_proxy_metrics_usage(p, run_id)
     if src == CostSource.TOKENS:

@@ -61,6 +61,8 @@ def _infer_cost_source(cli_path: str, pricing: dict[str, Any]) -> CostSource:
         return CostSource.COPILOT_JSON
     if stem == "codex":
         return CostSource.CODEX_JSON
+    if stem in ("cursor", "cursor-agent"):
+        return CostSource.CURSOR_JSON
     # Generic per-token pricing (any CLI that reports token counts via regex).
     if pricing.get("usd_per_input_token") and pricing.get("usd_per_output_token"):
         return CostSource.TOKENS

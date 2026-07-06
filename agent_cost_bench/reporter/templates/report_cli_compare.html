@@ -33,7 +33,7 @@
         <th class="num">Avg Cost / Run (USD)</th>
         <th class="num">Avg Credits / Run</th>
         <th class="num">Cost / Success (USD)</th>
-        <th class="num">Avg Latency</th>
+        <th class="num">Avg Duration</th>
         <th class="num">Tokens (in / out)</th>
         <th class="num">Runs</th>
       </tr>
@@ -64,12 +64,12 @@
     <div class="chart-box"><h3>Avg Cost per Run (USD)</h3><canvas id="costChart"></canvas></div>
     <div class="chart-box"><h3>Cost per Success (USD)</h3><canvas id="cppChart"></canvas></div>
     <div class="chart-box"><h3>Pass Rate (%)</h3><canvas id="passChart"></canvas></div>
-    <div class="chart-box"><h3>Avg Latency (s)</h3><canvas id="latChart"></canvas></div>
+    <div class="chart-box"><h3>Avg Duration (s)</h3><canvas id="latChart"></canvas></div>
   </div>
   <h3 style="margin:28px 0 14px;">Per-Task Breakdown — each CLI on every task</h3>
   <div class="chart-grid">
     <div class="chart-box"><h3>Cost per Run by Task (USD)</h3><canvas id="costByTaskChart"></canvas></div>
-    <div class="chart-box"><h3>Latency by Task (s)</h3><canvas id="latByTaskChart"></canvas></div>
+    <div class="chart-box"><h3>Duration by Task (s)</h3><canvas id="latByTaskChart"></canvas></div>
   </div>
   {% endif %}
 
@@ -102,7 +102,7 @@
     <thead><tr>
       <th>Task</th><th>CLI</th>{% if repeats > 1 %}<th class="num">#</th>{% endif %}
       <th>Status</th><th class="num">Functional</th><th class="num">Cost</th>
-      <th class="num">Credits</th><th class="num">Tokens</th><th class="num">Latency</th>
+      <th class="num">Credits</th><th class="num">Tokens</th><th class="num">Duration</th>
     </tr></thead>
     <tbody>
     {% for r in result_rows %}

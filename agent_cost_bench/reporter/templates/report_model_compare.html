@@ -38,7 +38,7 @@
         <th class="num">Avg Credits/Run</th>
         <th class="num">Avg Cost/Run (USD)</th>
         <th class="num">Credits/Success</th>
-        <th class="num">Avg Latency</th>
+        <th class="num">Avg Duration</th>
       </tr>
     </thead>
     <tbody>
@@ -122,7 +122,9 @@
       <th>Status</th><th class="num">Func</th>
       <th class="num" title="spec-driven tasks only">Spec</th>
       <th class="num" title="spec-driven tasks only — fraction of tasks.md checkboxes checked off">TC</th>
-      <th class="num">Final</th><th class="num">Credits</th><th class="num">Cost</th><th class="num">Latency</th>
+      <th class="num">Final</th><th class="num">Credits</th><th class="num">Cost</th>
+      {% if kas_proxy_metrics %}<th class="num">Input Tokens</th><th class="num">Output Tokens</th><th class="num">Cache Read</th><th class="num">Inference</th>{% endif %}
+      <th class="num">Duration</th>
     </tr></thead>
     <tbody>
     {% for r in result_rows %}
@@ -138,9 +140,15 @@
         <td class="num">{{ "%.0f%%"|format(r.final_score * 100) }}</td>
         <td class="num">{{ "%.3f"|format(r.credits) }}</td>
         <td class="num cost">{% if r.cost_usd is not none %}${{ "%.4f"|format(r.cost_usd) }}{% else %}—{% endif %}</td>
+        {% if kas_proxy_metrics %}
+        <td class="num">{% if r.input_tokens is not none %}{{ "{:,}".format(r.input_tokens) }}{% else %}—{% endif %}</td>
+        <td class="num">{% if r.output_tokens is not none %}{{ "{:,}".format(r.output_tokens) }}{% else %}—{% endif %}</td>
+        <td class="num">{% if r.cached_input_tokens is not none %}{{ "{:,}".format(r.cached_input_tokens) }}{% else %}—{% endif %}</td>
+        <td class="num">{% if r.cli_time %}{{ "%.1f"|format(r.cli_time) }}s{% else %}—{% endif %}</td>
+        {% endif %}
         <td class="num">{{ "%.1f"|format(r.cli_time) }}s</td>
       </tr>
-      <tr><td colspan="{{ 13 if repeats > 1 else 12 }}" style="padding:0;border:none;">
+      <tr><td colspan="{{ (17 if kas_proxy_metrics else 13) if repeats > 1 else (16 if kas_proxy_metrics else 12) }}" style="padding:0;border:none;">
         <details>
           <summary>phases &amp; details{% if r.error_message %} — {{ r.error_message }}{% endif %}{% if r.functional_summary %} · {{ r.functional_summary }}{% endif %}</summary>
           <pre>
