@@ -195,17 +195,21 @@ class BaseExecutor:
         # separate --effort flag.  When cost_source is cursor_json AND the
         # configured model_id doesn't already contain the effort level, append
         # it so the correct model is selected server-side.
+        # Only applies to provider models (claude-*, gpt-*) that support effort
+        # variants — Cursor's own models (composer-2.5) don't use effort suffixes.
         model_id = t.model_id
         if t.cost_source == CostSource.CURSOR_JSON and effort:
-            # Don't double-append if the user already baked the effort into model_id.
+            _CURSOR_EFFORT_PREFIXES = ("claude-", "gpt-")
             _CURSOR_EFFORT_SUFFIXES = (
                 "-low", "-medium", "-high", "-xhigh", "-max",
                 "-low-fast", "-medium-fast", "-high-fast", "-xhigh-fast", "-max-fast",
                 "-thinking-low", "-thinking-medium", "-thinking-xhigh", "-thinking-max",
                 "-thinking-low-fast", "-thinking-medium-fast", "-thinking-xhigh-fast", "-thinking-max-fast",
             )
-            if not any(model_id.endswith(sfx) for sfx in _CURSOR_EFFORT_SUFFIXES):
-                model_id = f"{model_id}-{effort}"
+            # Only append effort to provider models that use the suffix pattern.
+            if any(model_id.startswith(pfx) for pfx in _CURSOR_EFFORT_PREFIXES):
+                if not any(model_id.endswith(sfx) for sfx in _CURSOR_EFFORT_SUFFIXES):
+                    model_id = f"{model_id}-{effort}"
 
         cmd: list[str] = [t.cli_path]
         prompt_used = False

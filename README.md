@@ -42,48 +42,142 @@ pip install -e ".[dev]"     # optional: dev/test extras
 
 ## Quick start
 
-### cli-compare — same tasks, different CLIs
+### Step 1: Copy an example config
 
-*"How much does Sonnet 4.6 cost through Kiro vs Claude Code vs Copilot? How does GPT-5.5 via Codex compare?"*
+Example configs are provided as templates. **Copy them and fill in your specific details** — never edit the `*.example.yaml` files directly (they serve as reference).
 
 ```bash
-agent-cost-bench cli-compare run config.cli-compare.example.yaml
+# For CLI comparison (Kiro vs Claude Code vs Copilot vs Cursor vs Codex):
+cp config.cli-compare.example.yaml config.cli-compare.yaml
+
+# For model comparison (multiple models inside the Kiro CLI):
+cp config.model-compare.example.yaml config.model-compare.yaml
 ```
 
-The example config defines four runners: Kiro, Claude Code, Copilot (all on Sonnet 4.6), and Codex (on GPT-5.5). Cost is auto-detected from the binary name — you just provide the CLI path, model id, and pricing rates:
+Then edit your copy with your specific paths, model IDs, and pricing rates (see below).
+
+### Step 2: Set up authentication
+
+Each CLI reads its API key from standard environment variables. Set these in your shell before running:
+
+```bash
+export KIRO_API_KEY=...          # Kiro (or use `kiro login`)
+export ANTHROPIC_API_KEY=...     # Claude Code (or use `claude login`)
+export GITHUB_TOKEN=...          # Copilot (or use `copilot auth login`)
+export CURSOR_API_KEY=...        # Cursor (or use `cursor login`)
+export OPENAI_API_KEY=...        # Codex (or use `codex auth login`)
+```
+
+The harness inherits the parent shell's environment, so all CLIs pick up their keys automatically — no per-runner `env:` block needed.
+
+### Step 3: Configure pricing
+
+Pricing rates are volatile and change over time. Check each vendor's current pricing page before running. The example configs include inline comments with rates that were current at the time of writing, but **you are responsible for verifying these match your subscription tier and current published rates**.
+
+#### Pricing reference (verify before use)
+
+| CLI | Pricing config | Reference |
+|-----|----------------|-----------|
+| **Kiro** | `usd_per_credit: 0.04` | Credits consumed fractionally per task; check your plan's credit value |
+| **Claude Code** | No pricing config needed — reports `total_cost_usd` directly | Direct API billing; cost reported in CLI JSON output |
+| **GitHub Copilot** | 1 AI Credit = $0.01 USD|
+| **Cursor** | Token-level rates (see below) | [cursor.com/docs/models-and-pricing](https://cursor.com/docs/models-and-pricing) |
+| **OpenAI Codex** | Token-level rates (see below) | [platform.openai.com/docs/pricing](https://platform.openai.com/docs/pricing) |
+
+#### Token-level pricing (Cursor and Codex)
+
+These CLIs report raw token counts; the harness computes cost using rates you supply. Example for Cursor with Opus 4.8:
+
+```yaml
+pricing:
+  usd_per_input_token:        0.000005     # $5.00  / 1M (fresh input)
+  usd_per_cache_write_token:  0.00000625   # $6.25  / 1M (cache write)
+  usd_per_cached_input_token: 0.0000005    # $0.50  / 1M (cache read)
+  usd_per_output_token:       0.000025     # $25.00 / 1M
+```
+
+Example for Codex with GPT-5.5:
+
+```yaml
+pricing:
+  usd_per_input_token:        0.000005     # $5.00  / 1M
+  usd_per_cached_input_token: 0.0000005    # $0.50  / 1M
+  usd_per_output_token:       0.000030     # $30.00 / 1M
+```
+
+> **Important:** These rates change. Always cross-reference with the vendor's pricing page. Different models have different rates — update the pricing block when you change `model_id`.
+
+#### Cost source auto-detection
+
+The harness automatically detects how to read cost from each CLI based on its binary name
+
+### cli-compare — same tasks, different CLIs
+
+*"How much does Sonnet 4.6 cost through Kiro vs Claude Code vs Copilot? How does Opus 4.8 compare across all four CLIs plus Cursor?"*
+
+```bash
+agent-cost-bench cli-compare run config.cli-compare.yaml
+```
+
+The example config defines runners for Kiro, Claude Code, Copilot, and Cursor. Cost is auto-detected from the binary name — you provide the CLI path, model ID, and pricing rates:
 
 ```yaml
 runners:
   - name: kiro
+    display_name: "Kiro (claude-opus-4.8)"
     cli_path: kiro-cli
-    model_id: claude-sonnet-4.6
-    pricing: { usd_per_credit: 0.04 }
+    model_id: claude-opus-4.8
+    pricing:
+      usd_per_credit: 0.04
     cli_base_args: [chat, --no-interactive, --trust-all-tools,
                     "--model={model}", "--effort={effort}"]
 
-  - name: codex
-    cli_path: codex
-    model_id: gpt-5.5
+  - name: claude-code
+    display_name: "Claude Code (claude-opus-4.8)"
+    cli_path: claude
+    model_id: us.anthropic.claude-opus-4-8
+    cli_base_args: ["-p", "{prompt}", "--output-format", "json",
+                    "--model", "{model}", "--dangerously-skip-permissions",
+                    "--effort", "{effort}"]
+
+  - name: copilot
+    display_name: "GitHub Copilot (claude-opus-4.8)"
+    cli_path: copilot
+    model_id: claude-opus-4.8
     pricing:
-      usd_per_input_token:        0.000005    # $5.00/1M
-      usd_per_cached_input_token: 0.0000005   # $0.50/1M
-      usd_per_output_token:       0.000030    # $30.00/1M
-    cli_base_args: [exec, --json, --ephemeral, --skip-git-repo-check,
-                    --dangerously-bypass-approvals-and-sandbox, -m, "{model}", "{prompt}"]
+      usd_per_premium_request: 0.04
+    cli_base_args: ["-p", "{prompt}", "--model", "{model}",
+                    "--allow-all-tools", "--output-format", "json",
+                    "--effort", "{effort}"]
+
+  - name: cursor
+    display_name: "Cursor (claude-opus-4.8)"
+    cli_path: agent
+    model_id: claude-opus-4-8
+    pricing:
+      usd_per_input_token:        0.000005
+      usd_per_cache_write_token:  0.00000625
+      usd_per_cached_input_token: 0.0000005
+      usd_per_output_token:       0.000025
+    cli_base_args: ["-p", "{prompt}", "--trust", "--yolo",
+                    "--output-format", "json", "--model", "{model}"]
 ```
+
+> **Note:** Cursor encodes effort/thinking level as part of the model slug (e.g., `claude-opus-4-8-high`), not as a separate flag. The harness auto-appends the task's effort level to the `model_id` unless you bake it in yourself.
 
 ### model-compare — same CLI, different models
 
 *"Which model gives the best quality inside the Kiro CLI?"*
 
 ```bash
-agent-cost-bench model-compare run config.model-compare.example.yaml
+agent-cost-bench model-compare run config.model-compare.yaml
 ```
 
 ```yaml
 models:
   - claude-opus-4.8
   - claude-sonnet-4.6
+  - deepseek-3.2
 pricing: { usd_per_credit: 0.04 }
 judge_model: claude-opus-4.8    # grades rubric + spec quality tasks
 modes: ["vibe"]                 # or ["vibe", "spec-driven"]
@@ -227,13 +321,14 @@ AGENT_COST_BENCH_RESULT: {"score": 0.7, "checkpoints": {...}, "summary": "..."}
 
 ## Supported CLIs and cost detection
 
-| Binary name | Detected cost source | What it reads |
-|-------------|---------------------|---------------|
-| `kiro` / `kiro-cli` | Kiro credits | `Credits: X • Time: Ys` telemetry line |
-| `claude` | Claude JSON | `--output-format json` → `total_cost_usd` |
-| `copilot` | Copilot session AIU | `~/.copilot/session-state/` `totalNanoAiu` |
-| `codex` | Codex JSONL | `codex exec --json` → `turn.completed` token counts |
-| Any + per-token pricing | Token regex | Custom regex with `(?P<input>...)` / `(?P<output>...)` groups |
+| Binary name | What it reads |
+|-------------|---------------|
+| `kiro` / `kiro-cli` | `Credits: X • Time: Ys` telemetry line |
+| `claude` | `--output-format json` → `total_cost_usd` |
+| `copilot` | `--output-format json` JSONL + `~/.copilot/session-state/` `totalNanoAiu` |
+| `codex` | `codex exec --json` → `turn.completed` token counts |
+| `cursor` / `agent` | `-p --output-format json` → `usage` object with token counts |
+| Any + per-token pricing | Custom regex with `(?P<input>...)` / `(?P<output>...)` groups |
 
 
 ## Run the test suite

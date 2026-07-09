@@ -2,14 +2,15 @@
 #
 #   agent-cost-bench cli-compare run config.cli-compare.example.yaml
 #
-# Authentication: each CLI reads its API key from the standard env var that the
-# CLI itself expects. Set these in your shell before running the benchmark:
+# Authentication: each CLI reads its API key from its own auth mechanism.
+# Log in to each CLI before running the benchmark:
 #
-#   export KIRO_API_KEY=...          # Kiro (or use `kiro login`)
-#   export ANTHROPIC_API_KEY=...     # Claude Code (or use `claude login`)
-#   export GITHUB_TOKEN=...          # Copilot (or use `copilot auth login`)
-#   export CURSOR_API_KEY=...        # Cursor (or use `cursor login`)
-#   export OPENAI_API_KEY=...        # Codex (or use `codex auth login`)
+#   kiro login                       # Kiro
+#   claude login                     # Claude Code (or export ANTHROPIC_API_KEY)
+#   copilot auth login               # GitHub Copilot
+#   cursor login  (or agent login)   # Cursor (stores token in macOS Keychain;
+#                                    #   CURSOR_API_KEY env var alone is NOT sufficient)
+#   codex auth login                 # Codex (or export OPENAI_API_KEY)
 #
 # The harness inherits the parent shell's environment, so all CLIs pick up
 # their keys automatically — no per-runner `env:` block needed.
