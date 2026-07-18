@@ -1,0 +1,127 @@
+id: multitenant-rbac-api
+description: "Greenfield multi-tenant FastAPI application with RBAC, cursor-based pagination, per-tenant rate limiting, audit logging, and comprehensive error handling"
+timeout_minutes: 20
+effort: high
+functional_pass_threshold: 0.75
+
+prompt: |
+  Build a multi-tenant REST API using FastAPI that demonstrates tenant isolation,
+  role-based access control (RBAC), cursor-based pagination, per-tenant rate
+  limiting, and audit logging. This is a document management system where each
+  tenant has isolated data and users with different permission levels.
+
+  Create the following files:
+
+  1. models.py — Data models
+     - Tenant: id (UUID str), name (str), created_at (ISO 8601 str)
+     - User: id (UUID str), tenant_id (str), username (str), email (str),
+       role (one of "admin", "editor", "viewer"), is_active (bool), created_at
+     - Document: id (UUID str), tenant_id (str), title (str), content (str),
+       created_by (str — user_id), updated_by (str — user_id, nullable),
+       created_at, updated_at (nullable), tags (list of str), is_archived (bool)
+     - AuditEntry: id (UUID str), tenant_id (str), user_id (str), action (str),
+       resource_type (str), resource_id (str), timestamp (ISO 8601 str),
+       details (dict)
+
+  2. storage.py — In-memory data store
+     - Class DataStore with thread-safe operations for all models.
+     - Methods: create_tenant, get_tenant, list_tenants,
+       create_user, get_user, get_user_by_username, list_users(tenant_id),
+       create_document, get_document, update_document, delete_document,
+       list_documents(tenant_id, cursor, limit, tag_filter, archived_filter),
+       add_audit_entry, get_audit_log(tenant_id, limit, offset).
+     - Enforce tenant isolation: documents/users can only be accessed within
+       their own tenant.
+     - Cursor-based pagination for list_documents: cursor is the document ID
+       after which to start; return results plus a next_cursor (None if no more).
+
+  3. auth.py — Authentication and authorization
+     - Implement token-based auth using a simple Bearer token scheme where
+       the token is formatted as "{user_id}:{tenant_id}" (base64 encoded).
+       This is for testing purposes; no real crypto needed.
+     - Function create_token(user_id, tenant_id) -> str
+     - Function decode_token(token) -> dict with keys user_id, tenant_id
+       (raises AuthenticationError on invalid token).
+     - FastAPI dependency get_current_user(request) that extracts the Bearer
+       token, decodes it, looks up the user, verifies user is active and
+       belongs to the tenant, and returns the User.
+     - RBAC decorator or dependency require_role(*roles) that checks the
+       current user's role is in the allowed list; raises 403 if not.
+     - Define AuthenticationError and AuthorizationError.
+
+  4. rate_limiter.py — Per-tenant rate limiting
+     - Class RateLimiter implementing a sliding window or token bucket algorithm.
+     - Method is_allowed(tenant_id) -> bool: returns True if the request is
+       within limits, False otherwise.
+     - Method get_remaining(tenant_id) -> int: returns remaining requests in
+       the current window.
+     - Configuration: max_requests (default 100) per window_seconds (default 60).
+     - FastAPI middleware or dependency that checks the rate limit before
+       processing requests and returns 429 with a Retry-After header when exceeded.
+     - Include X-RateLimit-Remaining and X-RateLimit-Limit response headers.
+
+  5. main.py — FastAPI application with all routes
+     - Tenant management endpoints (no auth required for creation):
+       - POST /tenants — create a tenant
+       - GET /tenants/{tenant_id} — get tenant info (requires auth)
+     - User management (admin only within tenant):
+       - POST /tenants/{tenant_id}/users — create user. If the tenant has
+         NO existing users yet, allow creation without auth (this is the
+         bootstrap mechanism for the first admin). Otherwise require admin role.
+       - GET /tenants/{tenant_id}/users — list users (admin only)
+       - GET /tenants/{tenant_id}/users/{user_id} — get user (admin only)
+       - PUT /tenants/{tenant_id}/users/{user_id} — update user role/active
+         (admin only, cannot demote self)
+     - Document endpoints (auth required, tenant-isolated):
+       - POST /tenants/{tenant_id}/documents — create document (editor+admin)
+       - GET /tenants/{tenant_id}/documents — list documents with cursor-based
+         pagination (all roles). Query params: cursor, limit (default 10, max 50),
+         tag, archived (bool).
+       - GET /tenants/{tenant_id}/documents/{doc_id} — get one document (all roles)
+       - PUT /tenants/{tenant_id}/documents/{doc_id} — update document
+         (editor+admin; only own documents for editor, any for admin)
+       - DELETE /tenants/{tenant_id}/documents/{doc_id} — soft-delete (archive)
+         document (admin only)
+     - Audit log (admin only):
+       - GET /tenants/{tenant_id}/audit — get audit log with limit/offset params
+     - Auth utility:
+       - POST /auth/token — accepts {username, tenant_id} and returns a token
+         (for testing convenience; verifies user exists and is active)
+
+  6. middleware.py — Request middleware
+     - Rate limiting middleware that applies per-tenant limits.
+     - Request ID middleware: generate a unique request ID for each request
+       and include it in the response as X-Request-ID header.
+     - Error handling: global exception handler that returns consistent JSON
+       error responses with structure: {"detail": str, "error_code": str,
+       "request_id": str}.
+
+  7. requirements.txt — listing fastapi and uvicorn
+
+  Requirements:
+  - Tenant isolation is mandatory: a user from tenant A must NEVER see or
+    modify data belonging to tenant B. Return 403 if tenant_id in URL does
+    not match the authenticated user's tenant.
+  - All mutating operations must create an audit log entry.
+  - Use Pydantic models for request/response schemas. Use `str` for email
+    fields (do NOT use EmailStr — the email-validator package may not be
+    available).
+  - Return proper HTTP status codes: 201 for creation, 200 for success,
+    400 for bad input, 401 for missing/invalid auth, 403 for forbidden,
+    404 for not found, 429 for rate limited.
+  - The app must be importable as `from main import app` and runnable via
+    `uvicorn main:app`.
+  - Use a single global DataStore instance shared across the app. Create it
+    in storage.py as a module-level variable (e.g. `data_store = DataStore()`)
+    and import it where needed.
+
+verify:
+  runner: pytest
+  deps:
+    - fastapi==0.115.6
+    - starlette==0.41.3
+    - httpx==0.27.2
+    - uvicorn==0.34.0
+    - pydantic==2.10.4
+    - pydantic-core==2.27.2
+    - email-validator==2.1.1

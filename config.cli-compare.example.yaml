@@ -129,6 +129,11 @@ runners:
   #     - "{prompt}"
 
 # Task discovery (cli-compare is vibe-only; spec tasks are skipped)
+# Leave task_ids empty to run all tasks, or list specific ones. The repo
+# ships several high-complexity multi-file tasks (e.g. event-sourcing-cqrs,
+# multitenant-rbac-api, multitenant-workflow-engine) that use
+# functional_pass_threshold: 0.75 for partial credit — list them under
+# task_ids to focus a run on them.
 tasks_dir: tasks
 task_ids: 
 modes: ["vibe"]
@@ -143,6 +148,10 @@ concurrency: per_target
 timeout_minutes: 20
 repeats: 1
 functional_pass_threshold: 0.99
+# Container runtime for Docker-verified tasks defaults to `docker`. Set the
+# CONTAINER_RUNTIME=finch env var to use Finch instead. When using Finch on
+# macOS, set workspace_base under your home directory (e.g. ~/agent-cost-bench-runs)
+# since Finch can only mount volumes from the home directory.
 workspace_base: /tmp/agent-cost-bench-cli-compare
 
 # Reporting

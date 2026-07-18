@@ -29,6 +29,10 @@ Cost is always reported two ways: USD and native units (credits / AI Credits / t
   - `model-compare`: the Kiro CLI
 - **Docker** — only if you run the multi-language tasks (C#/.NET, Java,
   TypeScript, Terraform, Helm). Build images once with `./tasks/docker/build-images.sh`.
+  Alternatively, set `CONTAINER_RUNTIME=finch` to use [Finch](https://github.com/runfinch/finch)
+  instead of Docker (default is `docker`). When using Finch, set `workspace_base`
+  in your config to a path under your home directory (e.g. `~/bench-workspaces`)
+  since Finch on macOS can only mount volumes from the home directory.
 
 > **Cost warning:** Each CLI you benchmark requires your own active subscription or license (Kiro, Claude Code, GitHub Copilot, OpenAI Codex, etc.). Running benchmarks consumes credits, tokens, or premium requests against your account. A full run across all tasks can use significant resources. Start with a small subset (`task_ids:`) to estimate cost before running the full suite.
 

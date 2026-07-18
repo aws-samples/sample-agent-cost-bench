@@ -1,0 +1,295 @@
+id: platform-as-a-service
+description: "Greenfield multi-tenant Platform-as-a-Service backend with project management, resource quotas, billing/metering, service mesh, secrets management, deployment pipelines, log aggregation, alerting, tiered API keys, rate limiting, usage analytics, webhooks, and audit trail"
+timeout_minutes: 30
+effort: high
+functional_pass_threshold: 0.75
+
+prompt: |
+  Build a multi-tenant Platform-as-a-Service (PaaS) backend using FastAPI.
+  The system manages projects, resources, deployments, billing, and monitoring
+  for multiple tenants with tiered plans. All data is in-memory.
+
+  Create the following files:
+
+  1. models.py — Data models (Pydantic BaseModel for all)
+     - Tenant: id (UUID str), name (str), plan ("free" | "starter" | "pro" | "enterprise"),
+       created_at (ISO 8601 str)
+     - User: id (UUID str), tenant_id (str), username (str), email (str),
+       role ("owner" | "admin" | "developer" | "viewer"), is_active (bool), created_at
+     - Project: id (UUID str), tenant_id (str), name (str), description (str),
+       status ("active" | "suspended" | "archived"), region ("us-east" | "us-west" | "eu-west"),
+       created_by (str), created_at, updated_at
+     - Resource: id (UUID str), tenant_id (str), project_id (str),
+       resource_type ("compute" | "database" | "storage" | "cache" | "queue"),
+       name (str), size ("small" | "medium" | "large"), status ("provisioning" | "running" |
+       "stopped" | "failed" | "terminated"), config (dict), created_at, updated_at
+     - Quota: tenant_id (str), plan (str), limits (dict — keys: max_projects, max_resources_per_project,
+       max_deployments_per_day, max_api_keys, max_storage_gb, max_compute_hours)
+     - ApiKey: id (UUID str), tenant_id (str), key_hash (str), name (str),
+       tier ("standard" | "premium" | "unlimited"), rate_limit_per_minute (int),
+       is_active (bool), created_by (str), created_at, last_used_at (nullable)
+     - Deployment: id (UUID str), tenant_id (str), project_id (str),
+       version (str), status ("pending" | "building" | "deploying" | "live" |
+       "failed" | "rolled_back"), previous_deployment_id (str, nullable),
+       config (dict), created_by (str), created_at, completed_at (nullable)
+     - Secret: id (UUID str), tenant_id (str), project_id (str), key (str),
+       value_encrypted (str — just base64 encode for simulation), version (int),
+       created_by (str), created_at
+     - LogEntry: id (UUID str), tenant_id (str), project_id (str),
+       level ("debug" | "info" | "warn" | "error" | "fatal"), message (str),
+       source (str), timestamp (ISO 8601 str), metadata (dict)
+     - AlertRule: id (UUID str), tenant_id (str), project_id (str),
+       name (str), condition (str — e.g. "error_rate > 0.05"),
+       severity ("info" | "warning" | "critical"),
+       notification_channel ("webhook" | "email" | "in_app"),
+       is_active (bool), created_by (str), created_at
+     - Alert: id (UUID str), tenant_id (str), rule_id (str), project_id (str),
+       status ("firing" | "resolved"), message (str), triggered_at (str),
+       resolved_at (str, nullable)
+     - UsageRecord: id (UUID str), tenant_id (str), resource_type (str),
+       quantity (float), unit (str — "hours" | "gb" | "requests"),
+       recorded_at (ISO 8601 str), project_id (str)
+     - Invoice: id (UUID str), tenant_id (str), period_start (str),
+       period_end (str), line_items (list of dict with description, quantity, unit_price, total),
+       subtotal (float), tax (float), total (float),
+       status ("draft" | "issued" | "paid" | "overdue"), created_at
+     - Webhook: id (UUID str), tenant_id (str), url (str),
+       events (list of str), secret (str), is_active (bool), created_at
+     - WebhookDelivery: id (UUID str), webhook_id (str), event (str),
+       payload (dict), status ("success" | "failed"), attempted_at (str)
+     - AuditEntry: id (UUID str), tenant_id (str), user_id (str), action (str),
+       resource_type (str), resource_id (str), timestamp (ISO 8601 str),
+       details (dict), ip_address (str, nullable)
+
+  2. storage.py — In-memory data store
+     - Class DataStore with thread-safe operations for all models.
+     - CRUD for all entities.
+     - Query methods: resources by project, logs by level/project/time range,
+       alerts by status, deployments by project/status, usage by period.
+     - Enforce tenant isolation.
+     - Single global instance: `data_store = DataStore()`
+
+  3. auth.py — Authentication and authorization
+     - Bearer token: "{user_id}:{tenant_id}" base64 encoded.
+     - Functions: create_token, decode_token.
+     - FastAPI dependency get_current_user.
+     - RBAC dependency require_role(*roles).
+     - API key auth: dependency authenticate_api_key that validates key,
+       checks active, updates last_used_at.
+     - Define AuthenticationError, AuthorizationError.
+
+  4. quotas.py — Resource quota management
+     - Class QuotaManager:
+       - Plan limits:
+         free: {max_projects: 2, max_resources_per_project: 3, max_deployments_per_day: 5,
+                max_api_keys: 2, max_storage_gb: 1, max_compute_hours: 10}
+         starter: {max_projects: 5, max_resources_per_project: 10, max_deployments_per_day: 20,
+                   max_api_keys: 5, max_storage_gb: 10, max_compute_hours: 100}
+         pro: {max_projects: 20, max_resources_per_project: 50, max_deployments_per_day: 100,
+               max_api_keys: 20, max_storage_gb: 100, max_compute_hours: 1000}
+         enterprise: {max_projects: -1, max_resources_per_project: -1, max_deployments_per_day: -1,
+                      max_api_keys: -1, max_storage_gb: -1, max_compute_hours: -1} (-1 = unlimited)
+       - check_quota(tenant_id, resource_type, current_count) -> bool
+         Returns True if under limit, False if exceeded.
+       - get_usage(tenant_id) -> dict showing current usage vs limits.
+       - get_limits(plan) -> dict of limits for that plan.
+     - Raise QuotaExceededError when limits are hit.
+
+  5. projects.py — Project management
+     - Class ProjectManager:
+       - create_project(tenant_id, name, description, region, user_id) -> Project
+         Check quota before creation.
+       - get_project(tenant_id, project_id) -> Project
+       - list_projects(tenant_id, status=None) -> list
+       - suspend_project(tenant_id, project_id) -> Project (stop all resources)
+       - archive_project(tenant_id, project_id) -> Project
+       - update_project(tenant_id, project_id, **kwargs) -> Project
+
+  6. resources.py — Resource provisioning
+     - Class ResourceManager:
+       - provision(tenant_id, project_id, resource_type, name, size, config) -> Resource
+         Check quota. Status starts at "provisioning", immediately transitions to "running".
+       - stop(tenant_id, resource_id) -> Resource
+       - start(tenant_id, resource_id) -> Resource
+       - terminate(tenant_id, resource_id) -> Resource (status="terminated", irreversible)
+       - resize(tenant_id, resource_id, new_size) -> Resource
+       - list_resources(tenant_id, project_id=None, status=None) -> list
+       - get_resource(tenant_id, resource_id) -> Resource
+
+  7. deployments.py — Deployment pipeline
+     - Class DeploymentManager:
+       - create_deployment(tenant_id, project_id, version, config, user_id) -> Deployment
+         Check daily deployment quota. Status = "pending".
+       - execute_deployment(tenant_id, deployment_id) -> Deployment
+         Transition: pending -> building -> deploying -> live.
+         Set completed_at. Simulated (no actual build).
+       - rollback(tenant_id, project_id) -> Deployment
+         Create new deployment with previous_deployment_id pointing to current live.
+         Mark current as "rolled_back". New one goes to "live".
+       - get_deployment(tenant_id, deployment_id) -> Deployment
+       - list_deployments(tenant_id, project_id=None, status=None) -> list
+       - get_live_deployment(tenant_id, project_id) -> Deployment or None
+
+  8. secrets.py — Secrets management
+     - Class SecretsManager:
+       - set_secret(tenant_id, project_id, key, value, user_id) -> Secret
+         Store value as base64 encoded string. Auto-increment version if key exists.
+       - get_secret(tenant_id, project_id, key) -> Secret (latest version)
+       - list_secrets(tenant_id, project_id) -> list (keys only, no values)
+       - delete_secret(tenant_id, project_id, key) -> bool
+       - get_secret_versions(tenant_id, project_id, key) -> list
+     - Never expose raw values in list endpoints — only key names.
+
+  9. logging_service.py — Log aggregation
+     - Class LogService:
+       - ingest(tenant_id, project_id, level, message, source, metadata=None) -> LogEntry
+       - query(tenant_id, project_id=None, level=None, since=None, until=None,
+         source=None, limit=100) -> list
+       - get_error_rate(tenant_id, project_id, window_minutes=60) -> float
+         (errors / total logs in window)
+       - get_stats(tenant_id, project_id=None) -> dict with counts by level
+
+  10. alerting.py — Alert rules and firing
+      - Class AlertManager:
+        - create_rule(tenant_id, project_id, name, condition, severity,
+          notification_channel, user_id) -> AlertRule
+        - evaluate_rules(tenant_id, project_id) -> list of Alert
+          Check each active rule's condition against current metrics:
+          - "error_rate > X": use LogService.get_error_rate()
+          - "resource_count > X": count running resources
+          - For simplicity: any condition with "error_rate" checks log error rate,
+            anything else simulates as "not firing".
+          Create Alert with status="firing" for triggered rules.
+        - resolve_alert(tenant_id, alert_id) -> Alert
+        - list_alerts(tenant_id, status=None, project_id=None) -> list
+        - list_rules(tenant_id, project_id=None) -> list
+
+  11. billing.py — Usage metering and invoicing
+      - Class BillingManager:
+        - record_usage(tenant_id, project_id, resource_type, quantity, unit) -> UsageRecord
+        - get_usage_summary(tenant_id, period_start, period_end) -> dict
+          Group by resource_type, sum quantities.
+        - generate_invoice(tenant_id, period_start, period_end) -> Invoice
+          Pricing: compute=$0.10/hour, storage=$0.05/gb, database=$0.15/hour,
+          cache=$0.08/hour, queue=$0.02/request-thousand.
+          Calculate line items from usage records in period.
+          Tax = 10% of subtotal. Status = "draft".
+        - issue_invoice(tenant_id, invoice_id) -> Invoice (status -> "issued")
+        - pay_invoice(tenant_id, invoice_id) -> Invoice (status -> "paid")
+        - list_invoices(tenant_id, status=None) -> list
+
+  12. api_keys.py — API key management with rate limiting
+      - Class ApiKeyManager:
+        - create_key(tenant_id, name, tier, user_id) -> dict with {api_key: str, id: str}
+          Generate random key string. Store hash (just store plaintext for simulation).
+          Check quota. Rate limits by tier: standard=60/min, premium=300/min, unlimited=-1.
+        - validate_key(key_string) -> ApiKey or None
+        - revoke_key(tenant_id, key_id) -> ApiKey (is_active=False)
+        - list_keys(tenant_id) -> list (mask key_hash in response)
+        - check_rate_limit(api_key: ApiKey) -> bool
+          Simple counter: track calls per minute per key. Return True if under limit.
+
+  13. webhooks.py — Webhook management and delivery
+      - Class WebhookManager:
+        - register(tenant_id, url, events, secret) -> Webhook
+        - fire(tenant_id, event, payload) -> list of WebhookDelivery
+          For each active webhook subscribed to this event, create a delivery
+          with status="success" (simulated).
+        - list_webhooks(tenant_id) -> list
+        - deactivate(tenant_id, webhook_id) -> Webhook
+        - get_deliveries(tenant_id, webhook_id=None, limit=50) -> list
+
+  14. main.py — FastAPI application with all routes
+      - Auth: POST /auth/token — {username, tenant_id} -> token
+      - Tenants: POST /tenants (no auth), GET /tenants/{id} (auth)
+      - Users: POST /tenants/{tid}/users (first no auth, rest owner/admin),
+        GET /tenants/{tid}/users (admin+)
+      - Projects:
+        - POST /tenants/{tid}/projects (admin/developer)
+        - GET /tenants/{tid}/projects — query: status
+        - GET /tenants/{tid}/projects/{pid}
+        - PUT /tenants/{tid}/projects/{pid} (admin)
+        - POST /tenants/{tid}/projects/{pid}/suspend (admin)
+        - POST /tenants/{tid}/projects/{pid}/archive (owner/admin)
+      - Resources:
+        - POST /tenants/{tid}/projects/{pid}/resources (admin/developer)
+        - GET /tenants/{tid}/projects/{pid}/resources — query: status
+        - POST /tenants/{tid}/resources/{rid}/stop
+        - POST /tenants/{tid}/resources/{rid}/start
+        - POST /tenants/{tid}/resources/{rid}/terminate (admin)
+        - PUT /tenants/{tid}/resources/{rid}/resize — {size}
+      - Deployments:
+        - POST /tenants/{tid}/projects/{pid}/deployments (admin/developer)
+        - GET /tenants/{tid}/projects/{pid}/deployments — query: status
+        - POST /tenants/{tid}/deployments/{did}/execute
+        - POST /tenants/{tid}/projects/{pid}/rollback (admin)
+        - GET /tenants/{tid}/projects/{pid}/deployments/live
+      - Secrets:
+        - PUT /tenants/{tid}/projects/{pid}/secrets/{key} — {value}
+        - GET /tenants/{tid}/projects/{pid}/secrets/{key}
+        - GET /tenants/{tid}/projects/{pid}/secrets (keys only)
+        - DELETE /tenants/{tid}/projects/{pid}/secrets/{key}
+      - Logs:
+        - POST /tenants/{tid}/projects/{pid}/logs (developer+)
+        - GET /tenants/{tid}/logs — query: project_id, level, since, until, limit
+        - GET /tenants/{tid}/projects/{pid}/logs/stats
+        - GET /tenants/{tid}/projects/{pid}/logs/error-rate
+      - Alerts:
+        - POST /tenants/{tid}/projects/{pid}/alert-rules (admin)
+        - GET /tenants/{tid}/alert-rules — query: project_id
+        - POST /tenants/{tid}/projects/{pid}/alerts/evaluate
+        - GET /tenants/{tid}/alerts — query: status, project_id
+        - POST /tenants/{tid}/alerts/{aid}/resolve
+      - Billing:
+        - POST /tenants/{tid}/usage (system/admin) — {project_id, resource_type, quantity, unit}
+        - GET /tenants/{tid}/usage/summary — query: period_start, period_end
+        - POST /tenants/{tid}/invoices/generate — {period_start, period_end}
+        - GET /tenants/{tid}/invoices — query: status
+        - POST /tenants/{tid}/invoices/{iid}/issue (admin)
+        - POST /tenants/{tid}/invoices/{iid}/pay
+      - API Keys:
+        - POST /tenants/{tid}/api-keys (admin)
+        - GET /tenants/{tid}/api-keys
+        - DELETE /tenants/{tid}/api-keys/{kid} (admin) — revoke
+      - Webhooks:
+        - POST /tenants/{tid}/webhooks (admin)
+        - GET /tenants/{tid}/webhooks
+        - DELETE /tenants/{tid}/webhooks/{wid} (admin)
+        - GET /tenants/{tid}/webhooks/{wid}/deliveries
+      - Quotas: GET /tenants/{tid}/quotas — current usage vs limits
+      - Health: GET /health — {status: "healthy"}
+      - Audit: GET /tenants/{tid}/audit (owner/admin)
+
+  15. middleware.py — Request middleware
+      - X-Request-ID header on all responses.
+      - Global error handler: {"detail", "error_code", "request_id"}.
+
+  16. requirements.txt — fastapi, uvicorn
+
+  Requirements:
+  - Tenant isolation mandatory. Return 403 on mismatch.
+  - All mutating operations create audit entries.
+  - Use Pydantic models. Use `str` for email (not EmailStr).
+  - HTTP status codes: 201 creation, 200 success, 400 bad input, 401 unauth,
+    403 forbidden, 404 not found, 409 conflict, 429 rate limited.
+  - App importable as `from main import app`.
+  - Single global DataStore instance in storage.py.
+  - First user in tenant: no auth (bootstrap). Rest require owner/admin.
+  - Quota checks must happen before resource creation (not after).
+  - Deployments are sequential per project — only one can be "live" at a time.
+  - Secrets must never expose values in list endpoints.
+  - Invoice pricing is fixed: compute $0.10/hr, storage $0.05/gb, database $0.15/hr,
+    cache $0.08/hr, queue $0.02/1000-requests. Tax = 10%.
+  - API key rate limiting: standard 60/min, premium 300/min, unlimited = no limit.
+  - All timestamps ISO 8601. All IDs UUID4 strings.
+
+verify:
+  runner: pytest
+  deps:
+    - fastapi==0.115.6
+    - starlette==0.41.3
+    - httpx==0.27.2
+    - uvicorn==0.34.0
+    - pydantic==2.10.4
+    - pydantic-core==2.27.2
+    - email-validator==2.1.1
