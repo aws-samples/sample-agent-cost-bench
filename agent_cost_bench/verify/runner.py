@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 from ..models import FunctionalTestResult, TaskConfig
-from .docker_env import docker_available, resolve_docker_env
+from .docker_env import get_runtime, docker_available, resolve_docker_env
 from .parsers import parse_results
 
 _CONTAINER_SRC = "/src-ro"
@@ -54,18 +54,18 @@ exit $ec
         spec = self.task.verify
         start = time.monotonic()
 
-        if shutil.which("docker") is None:
-            return self._harness_error("Docker not installed on host (required for this task)")
+        if shutil.which(get_runtime()) is None:
+            return self._harness_error(f"{get_runtime()} not installed on host (required for this task)")
 
         env = resolve_docker_env(spec.image)
         if env is None:
             if docker_available():
                 msg = (
-                    f"Image {spec.image} not found on any reachable Docker daemon — "
+                    f"Image {spec.image} not found on any reachable daemon — "
                     f"run tasks/docker/build-images.sh"
                 )
             else:
-                msg = "Docker daemon not reachable from the verify subprocess"
+                msg = f"{get_runtime()} daemon not reachable from the verify subprocess"
             return self._harness_error(msg)
 
         src_dir = self.workspace / "src"
@@ -78,11 +78,16 @@ exit $ec
             if candidate.exists():
                 tests_host = candidate
 
-        results_dir = Path(tempfile.mkdtemp(prefix="agent_cost_bench-verify-"))
+        # Finch on macOS can only mount volumes from the home directory, so
+        # place the results dir inside the workspace. Docker works with /tmp.
+        if get_runtime() == "finch":
+            results_dir = Path(tempfile.mkdtemp(prefix="agent_cost_bench-verify-", dir=str(self.workspace)))
+        else:
+            results_dir = Path(tempfile.mkdtemp(prefix="agent_cost_bench-verify-"))
         timeout = spec.timeout_seconds or min(self.task.timeout_minutes * 60, 600)
 
         cmd = [
-            "docker", "run", "--rm", f"--network={spec.network}",
+            get_runtime(), "run", "--rm", f"--network={spec.network}",
             "-v", f"{src_dir}:{_CONTAINER_SRC}:ro",
             "-v", f"{results_dir}:{_CONTAINER_RESULTS}",
             "-e", f"SRC_RO={_CONTAINER_SRC}",

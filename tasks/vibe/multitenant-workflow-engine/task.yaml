@@ -1,0 +1,196 @@
+id: multitenant-workflow-engine
+description: "Greenfield multi-tenant FastAPI application with RBAC, document workflow/state-machine engine, transition guards, audit trails, notifications, SLA tracking, bulk operations, and webhook delivery"
+timeout_minutes: 25
+effort: high
+functional_pass_threshold: 0.75
+
+prompt: |
+  Build a multi-tenant REST API using FastAPI that extends a document management
+  system with a full workflow/state-machine engine. Documents go through approval
+  workflows with configurable states, transitions, guards, notifications,
+  deadline tracking, and webhook delivery. The system supports tenant isolation,
+  role-based access control (RBAC), and comprehensive audit logging.
+
+  Create the following files:
+
+  1. models.py — Data models
+     - Tenant: id (UUID str), name (str), created_at (ISO 8601 str)
+     - User: id (UUID str), tenant_id (str), username (str), email (str),
+       role (one of "admin", "editor", "viewer"), is_active (bool), created_at
+     - Document: id (UUID str), tenant_id (str), title (str), content (str),
+       created_by (str — user_id), updated_by (str — user_id, nullable),
+       created_at, updated_at (nullable), tags (list of str), is_archived (bool),
+       current_state (str, default "draft"), workflow_deadline (ISO 8601 str, nullable)
+     - WorkflowTransition: id (UUID str), document_id (str), from_state (str),
+       to_state (str), triggered_by (str — user_id), timestamp (ISO 8601 str),
+       comment (str, nullable)
+     - Notification: id (UUID str), tenant_id (str), user_id (str),
+       message (str), type (str — e.g. "transition", "deadline", "assignment"),
+       is_read (bool, default False), created_at (ISO 8601 str),
+       related_document_id (str, nullable)
+     - Webhook: id (UUID str), tenant_id (str), url (str), events (list of str),
+       is_active (bool, default True), created_at (ISO 8601 str), secret (str, nullable)
+     - WebhookDelivery: id (UUID str), webhook_id (str), event (str),
+       payload (dict), status (str — "success", "failed", "pending"),
+       attempted_at (ISO 8601 str), response_code (int, nullable)
+     - AuditEntry: id (UUID str), tenant_id (str), user_id (str), action (str),
+       resource_type (str), resource_id (str), timestamp (ISO 8601 str),
+       details (dict)
+
+  2. storage.py — In-memory data store
+     - Class DataStore with thread-safe operations for all models.
+     - Methods for tenants, users, documents (CRUD), workflow transitions,
+       notifications, webhooks, webhook deliveries, and audit entries.
+     - Enforce tenant isolation: all data scoped by tenant_id.
+     - Use a single global DataStore instance as a module-level variable
+       (e.g. `data_store = DataStore()`) and import it where needed.
+
+  3. auth.py — Authentication and authorization
+     - Token-based auth using Bearer token scheme where the token is
+       "{user_id}:{tenant_id}" (base64 encoded). No real crypto needed.
+     - Function create_token(user_id, tenant_id) -> str
+     - Function decode_token(token) -> dict with keys user_id, tenant_id
+     - FastAPI dependency get_current_user(request) that extracts Bearer
+       token, decodes it, verifies user is active and belongs to tenant.
+     - RBAC dependency require_role(*roles) that checks user's role.
+     - Define AuthenticationError and AuthorizationError.
+
+  4. workflow.py — Workflow engine
+     - Define the state machine with states: draft, review, approved,
+       published, rejected, archived.
+     - Define allowed transitions:
+       - draft -> review (roles: editor, admin)
+       - review -> approved (roles: admin)
+       - review -> rejected (roles: admin)
+       - approved -> published (roles: admin)
+       - rejected -> draft (roles: editor, admin) — allows resubmission
+       - published -> archived (roles: admin)
+       - draft -> archived (roles: admin)
+     - Transition guards:
+       - draft -> review: document must have title and content (non-empty)
+       - review -> approved: document must have at least one tag
+       - approved -> published: document must have been in "approved" state
+         (verified by transition history)
+     - Function execute_transition(document, from_state, to_state, user, comment)
+       that validates the transition is allowed, checks role permissions,
+       runs guards, records the transition in history, updates document state,
+       triggers notifications, and fires webhooks.
+     - Function get_transition_history(document_id) -> list of WorkflowTransition.
+     - Function get_available_transitions(document, user_role) -> list of
+       possible next states for the document given the user's role.
+
+  5. notifications.py — Notification system
+     - In-memory notification store (part of DataStore).
+     - Function notify_transition(tenant_id, document, from_state, to_state,
+       triggered_by_user) — creates notifications for relevant users:
+       - On submit for review (draft -> review): notify all admins in tenant
+       - On approval/rejection: notify the document creator
+       - On publish: notify all users in tenant
+     - Function notify_deadline(tenant_id, document, user_id) — creates an
+       overdue notification for the document creator and tenant admins.
+     - Endpoints to list and mark notifications as read.
+
+  6. webhooks.py — Webhook registration and simulated delivery
+     - CRUD endpoints for webhooks (admin only):
+       - POST /tenants/{tenant_id}/webhooks — register webhook
+       - GET /tenants/{tenant_id}/webhooks — list webhooks
+       - DELETE /tenants/{tenant_id}/webhooks/{webhook_id} — deactivate
+     - Supported events: "document.transition", "document.created",
+       "document.deadline_exceeded"
+     - On relevant events, create a WebhookDelivery record with status
+       "success" (simulated — no actual HTTP call needed, just log the
+       delivery attempt with the payload that would be sent).
+     - GET /tenants/{tenant_id}/webhooks/{webhook_id}/deliveries — view
+       delivery log for a webhook.
+
+  7. main.py — FastAPI application with all routes
+     - Tenant management endpoints (no auth required for creation):
+       - POST /tenants — create a tenant
+       - GET /tenants/{tenant_id} — get tenant info (requires auth)
+     - User management (admin only within tenant):
+       - POST /tenants/{tenant_id}/users — create user. If the tenant has
+         NO existing users yet, allow creation without auth (this is the
+         bootstrap mechanism for the first admin). Otherwise require admin role.
+       - GET /tenants/{tenant_id}/users — list users (admin only)
+       - GET /tenants/{tenant_id}/users/{user_id} — get user (admin only)
+     - Document endpoints (auth required, tenant-isolated):
+       - POST /tenants/{tenant_id}/documents — create document (editor+admin)
+       - GET /tenants/{tenant_id}/documents — list documents (all roles),
+         supports query params: state, tag, archived (bool)
+       - GET /tenants/{tenant_id}/documents/{doc_id} — get document (all roles)
+       - PUT /tenants/{tenant_id}/documents/{doc_id} — update document
+         (editor+admin; only own documents for editor, any for admin)
+       - DELETE /tenants/{tenant_id}/documents/{doc_id} — archive (admin only)
+     - Workflow endpoints (auth required):
+       - POST /tenants/{tenant_id}/documents/{doc_id}/transitions — trigger
+         a state transition. Body: {to_state: str, comment: str (optional)}.
+         Returns the updated document. Validates permissions and guards.
+       - GET /tenants/{tenant_id}/documents/{doc_id}/transitions — get
+         transition history for document.
+       - GET /tenants/{tenant_id}/documents/{doc_id}/available-transitions —
+         get list of valid next states for current user.
+     - Notification endpoints (auth required):
+       - GET /tenants/{tenant_id}/notifications — list notifications for
+         the current user (with ?unread_only=true filter)
+       - PUT /tenants/{tenant_id}/notifications/{notification_id}/read —
+         mark notification as read
+     - Bulk operations:
+       - POST /tenants/{tenant_id}/documents/bulk-transition — body:
+         {document_ids: list[str], to_state: str, comment: str (optional)}.
+         Attempts the transition on each document. Returns a results array
+         with per-document success/failure:
+         {results: [{document_id, success: bool, error: str|null}, ...]}.
+         Must not abort on individual failures — process all documents.
+     - SLA/Deadline endpoints:
+       - PUT /tenants/{tenant_id}/documents/{doc_id}/deadline — set a
+         review deadline (body: {deadline: ISO 8601 str}). Only admin can set.
+       - GET /tenants/{tenant_id}/documents/overdue — list documents whose
+         deadline has passed and are still in "review" state.
+     - Webhook endpoints (see webhooks.py above)
+     - Audit log (admin only):
+       - GET /tenants/{tenant_id}/audit — get audit log
+     - Auth utility:
+       - POST /auth/token — accepts {username, tenant_id}, returns token
+
+  8. middleware.py — Request middleware
+     - Request ID middleware: generate unique ID per request, include as
+       X-Request-ID response header.
+     - Error handling: global exception handler returning consistent JSON:
+       {"detail": str, "error_code": str, "request_id": str}.
+
+  9. requirements.txt — listing fastapi and uvicorn
+
+  Requirements:
+  - Tenant isolation is mandatory: a user from tenant A must NEVER see or
+    modify data belonging to tenant B. Return 403 if tenant_id in URL does
+    not match the authenticated user's tenant.
+  - All mutating operations must create an audit log entry.
+  - Use Pydantic models for request/response schemas. Use `str` for email
+    fields (do NOT use EmailStr — the email-validator package may not be
+    available).
+  - Return proper HTTP status codes: 201 for creation, 200 for success,
+    400 for bad input/invalid transition, 401 for missing/invalid auth,
+    403 for forbidden, 404 for not found, 409 for invalid state transition.
+  - The app must be importable as `from main import app` and runnable via
+    `uvicorn main:app`.
+  - Use a single global DataStore instance shared across the app. Create it
+    in storage.py as a module-level variable (e.g. `data_store = DataStore()`)
+    and import it where needed.
+  - The first user created in a tenant can be created without authentication
+    (bootstrap mechanism). Subsequent user creation requires admin role.
+  - Workflow transitions must be atomic — either the full transition succeeds
+    (state update + history + notifications + webhooks) or it fails with no
+    partial changes.
+  - Bulk operations must handle partial failures gracefully — never abort the
+    entire batch on a single document failure.
+
+verify:
+  runner: pytest
+  deps:
+    - fastapi==0.115.6
+    - starlette==0.41.3
+    - httpx==0.27.2
+    - uvicorn==0.34.0
+    - pydantic==2.10.4
+    - pydantic-core==2.27.2
+    - email-validator==2.1.1

@@ -1,0 +1,279 @@
+id: ml-pipeline-orchestrator
+description: "Greenfield multi-tenant ML pipeline orchestrator with dataset registry, feature store, experiment tracking, model versioning, training DAG, hyperparameter search, model serving, A/B testing, drift detection, and rollback"
+timeout_minutes: 30
+effort: high
+functional_pass_threshold: 0.75
+
+prompt: |
+  Build a multi-tenant ML pipeline orchestrator using FastAPI. The system
+  manages the full ML lifecycle: datasets, features, experiments, model training,
+  serving, A/B testing, and monitoring. All data is in-memory (no real ML
+  training — simulate computations).
+
+  Create the following files:
+
+  1. models.py — Data models (Pydantic BaseModel for all)
+     - Tenant: id (UUID str), name (str), created_at (ISO 8601 str)
+     - User: id (UUID str), tenant_id (str), username (str), email (str),
+       role ("admin" | "data_scientist" | "viewer"), is_active (bool), created_at
+     - Dataset: id (UUID str), tenant_id (str), name (str), description (str),
+       schema (dict — column_name: type_str), row_count (int), size_bytes (int),
+       source (str), version (int), tags (list of str), created_by (str),
+       created_at, is_active (bool)
+     - Feature: id (UUID str), tenant_id (str), name (str), description (str),
+       feature_type ("numerical" | "categorical" | "embedding"), source_dataset_id (str),
+       transformation (str — e.g. "normalize", "one_hot", "log_transform", "none"),
+       version (int), created_by (str), created_at
+     - Experiment: id (UUID str), tenant_id (str), name (str), description (str),
+       status ("created" | "running" | "completed" | "failed" | "cancelled"),
+       dataset_id (str), feature_ids (list of str), algorithm (str),
+       hyperparameters (dict), metrics (dict — e.g. {"accuracy": 0.95, "f1": 0.92}),
+       started_at (nullable), completed_at (nullable), created_by (str), created_at
+     - Model: id (UUID str), tenant_id (str), name (str), version (int),
+       experiment_id (str), algorithm (str), metrics (dict),
+       status ("staged" | "production" | "archived" | "rolled_back"),
+       artifact_path (str), created_by (str), created_at
+     - ServingEndpoint: id (UUID str), tenant_id (str), name (str),
+       model_id (str), status ("active" | "inactive" | "draining"),
+       traffic_percentage (int, 0-100), created_at, updated_at
+     - ABTest: id (UUID str), tenant_id (str), name (str),
+       control_model_id (str), challenger_model_id (str),
+       traffic_split (int — percentage to challenger, 0-100),
+       status ("running" | "completed" | "cancelled"),
+       start_date (str), end_date (str, nullable),
+       control_metrics (dict), challenger_metrics (dict),
+       winner (str, nullable — "control" | "challenger"), created_by (str), created_at
+     - DriftReport: id (UUID str), tenant_id (str), model_id (str),
+       drift_score (float, 0.0-1.0), features_drifted (list of str),
+       severity ("low" | "medium" | "high"), recommendation (str),
+       created_at
+     - PipelineRun: id (UUID str), tenant_id (str), name (str),
+       steps (list of dict with name, status, started_at, completed_at, error),
+       overall_status ("pending" | "running" | "completed" | "failed"),
+       created_by (str), created_at, completed_at (nullable)
+     - AuditEntry: id (UUID str), tenant_id (str), user_id (str), action (str),
+       resource_type (str), resource_id (str), timestamp (ISO 8601 str),
+       details (dict)
+
+  2. storage.py — In-memory data store
+     - Class DataStore with thread-safe operations for all models.
+     - CRUD for all entities. Queries: datasets by tag, models by status,
+       experiments by status/algorithm, features by dataset.
+     - Model versioning: auto-increment version per name within tenant.
+     - Enforce tenant isolation.
+     - Single global instance: `data_store = DataStore()`
+
+  3. auth.py — Authentication and authorization
+     - Bearer token: "{user_id}:{tenant_id}" base64 encoded.
+     - Functions: create_token, decode_token.
+     - FastAPI dependency get_current_user.
+     - RBAC dependency require_role(*roles).
+     - Define AuthenticationError and AuthorizationError.
+
+  4. dataset_registry.py — Dataset management
+     - Class DatasetRegistry:
+       - register(tenant_id, name, schema, row_count, size_bytes, source, tags, user_id) -> Dataset
+         Auto-increments version if name already exists.
+       - get(tenant_id, dataset_id) -> Dataset
+       - list_datasets(tenant_id, tag=None) -> list
+       - get_versions(tenant_id, name) -> list of Dataset (all versions)
+       - deactivate(tenant_id, dataset_id) -> Dataset (set is_active=False)
+       - validate_schema(schema: dict) -> bool (all values must be valid
+         type strings: "int", "float", "string", "bool", "datetime")
+
+  5. feature_store.py — Feature engineering registry
+     - Class FeatureStore:
+       - create_feature(tenant_id, name, description, feature_type, source_dataset_id,
+         transformation, user_id) -> Feature. Validate source_dataset_id exists.
+         Auto-increment version if name exists.
+       - get_feature(tenant_id, feature_id) -> Feature
+       - list_features(tenant_id, dataset_id=None) -> list
+       - get_feature_set(tenant_id, feature_ids) -> list of Feature
+         Raise if any feature_id not found.
+       - compute_features(tenant_id, feature_ids, dataset_id) -> dict
+         Simulated: return {"status": "computed", "feature_count": len(feature_ids),
+         "row_count": dataset.row_count}.
+
+  6. experiment_tracker.py — Experiment management
+     - Class ExperimentTracker:
+       - create_experiment(tenant_id, name, description, dataset_id, feature_ids,
+         algorithm, hyperparameters, user_id) -> Experiment (status="created")
+       - run_experiment(tenant_id, experiment_id) -> Experiment
+         Simulated training: set status="running", then "completed".
+         Generate fake metrics based on algorithm:
+           - "random_forest": accuracy 0.85-0.95, f1 0.82-0.93
+           - "xgboost": accuracy 0.87-0.96, f1 0.84-0.94
+           - "linear_regression": accuracy 0.70-0.85, f1 0.68-0.83
+           - other: accuracy 0.75-0.90, f1 0.72-0.88
+         Use random within range (import random; seed on experiment_id for reproducibility).
+         Set started_at and completed_at.
+       - get_experiment(tenant_id, experiment_id) -> Experiment
+       - list_experiments(tenant_id, status=None, algorithm=None) -> list
+       - compare_experiments(tenant_id, experiment_ids) -> list of dict
+         with {experiment_id, algorithm, metrics} for each.
+       - cancel_experiment(tenant_id, experiment_id) -> Experiment
+
+  7. model_registry.py — Model versioning and lifecycle
+     - Class ModelRegistry:
+       - register_model(tenant_id, name, experiment_id, user_id) -> Model
+         Creates model with status="staged", copies metrics from experiment,
+         auto-increments version per name.
+       - promote(tenant_id, model_id) -> Model — set status="production".
+         Any other model with same name in "production" gets set to "archived".
+       - rollback(tenant_id, model_name) -> Model — find latest "archived"
+         model with that name, set it to "production", set current production
+         to "rolled_back". Raise if no archived version exists.
+       - get_model(tenant_id, model_id) -> Model
+       - list_models(tenant_id, status=None, name=None) -> list
+       - get_production_model(tenant_id, name) -> Model or None
+       - archive(tenant_id, model_id) -> Model
+
+  8. serving.py — Model serving and A/B testing
+     - Class ServingManager:
+       - create_endpoint(tenant_id, name, model_id) -> ServingEndpoint
+         Status="active", traffic=100.
+       - predict(tenant_id, endpoint_name, input_data: dict) -> dict
+         Simulated: return {"prediction": hash(str(input_data)) % 10,
+         "model_id": endpoint.model_id, "latency_ms": random 5-50}.
+       - update_traffic(tenant_id, endpoint_id, percentage) -> ServingEndpoint
+       - deactivate_endpoint(tenant_id, endpoint_id) -> ServingEndpoint
+       - list_endpoints(tenant_id) -> list
+
+     - Class ABTestManager:
+       - create_test(tenant_id, name, control_model_id, challenger_model_id,
+         traffic_split, user_id) -> ABTest (status="running")
+       - evaluate_test(tenant_id, test_id) -> ABTest
+         Simulated: generate random metrics for both models (accuracy,
+         latency_ms, error_rate). Set winner based on higher accuracy.
+         Set status="completed".
+       - get_test(tenant_id, test_id) -> ABTest
+       - list_tests(tenant_id, status=None) -> list
+       - cancel_test(tenant_id, test_id) -> ABTest
+
+  9. drift_detector.py — Model monitoring
+     - Class DriftDetector:
+       - check_drift(tenant_id, model_id) -> DriftReport
+         Simulated: generate random drift_score (0.0-1.0).
+         If > 0.7: severity="high", recommendation="Retrain immediately"
+         If > 0.4: severity="medium", recommendation="Monitor closely"
+         Else: severity="low", recommendation="No action needed"
+         Pick 0-3 random feature names as drifted.
+       - get_reports(tenant_id, model_id=None, severity=None) -> list
+       - get_latest_report(tenant_id, model_id) -> DriftReport or None
+
+  10. pipeline.py — Training pipeline DAG execution
+      - Class PipelineOrchestrator:
+        - create_pipeline(tenant_id, name, steps: list of str, user_id) -> PipelineRun
+          Steps are names like: "validate_data", "compute_features",
+          "train_model", "evaluate", "register_model".
+          Status="pending", each step has status="pending".
+        - run_pipeline(tenant_id, pipeline_id) -> PipelineRun
+          Execute steps sequentially. Each step:
+          - Set step status="running", set started_at.
+          - Simulate work (just set completed_at = now).
+          - Set step status="completed".
+          - If step name is "train_model" and no dataset_id context,
+            simulate failure: set step status="failed", overall="failed", stop.
+          Overall status="completed" if all steps pass, else "failed".
+        - get_pipeline(tenant_id, pipeline_id) -> PipelineRun
+        - list_pipelines(tenant_id, status=None) -> list
+        - retry_pipeline(tenant_id, pipeline_id) -> PipelineRun
+          Reset failed steps to "pending", re-run from first failed step.
+
+  11. hyperparameter.py — Hyperparameter search
+      - Class HyperparameterSearch:
+        - grid_search(tenant_id, dataset_id, feature_ids, algorithm,
+          param_grid: dict, user_id) -> list of Experiment
+          param_grid example: {"n_estimators": [50, 100, 200], "max_depth": [3, 5, 10]}
+          Create and run an experiment for each combination.
+          Return all experiments sorted by best metric (accuracy desc).
+        - get_best_params(tenant_id, experiment_ids) -> dict
+          Find experiment with highest accuracy, return its hyperparameters.
+
+  12. main.py — FastAPI application with all routes
+      - Auth: POST /auth/token — {username, tenant_id} -> token
+      - Tenants: POST /tenants (no auth), GET /tenants/{id} (auth)
+      - Users: POST /tenants/{tid}/users (first no auth, rest admin),
+        GET /tenants/{tid}/users (admin/data_scientist)
+      - Datasets:
+        - POST /tenants/{tid}/datasets (admin/data_scientist)
+        - GET /tenants/{tid}/datasets — query: tag
+        - GET /tenants/{tid}/datasets/{did}
+        - GET /tenants/{tid}/datasets/{did}/versions
+        - DELETE /tenants/{tid}/datasets/{did} (admin) — deactivate
+      - Features:
+        - POST /tenants/{tid}/features (admin/data_scientist)
+        - GET /tenants/{tid}/features — query: dataset_id
+        - GET /tenants/{tid}/features/{fid}
+        - POST /tenants/{tid}/features/compute — {feature_ids, dataset_id}
+      - Experiments:
+        - POST /tenants/{tid}/experiments (admin/data_scientist)
+        - GET /tenants/{tid}/experiments — query: status, algorithm
+        - GET /tenants/{tid}/experiments/{eid}
+        - POST /tenants/{tid}/experiments/{eid}/run
+        - POST /tenants/{tid}/experiments/{eid}/cancel
+        - POST /tenants/{tid}/experiments/compare — {experiment_ids}
+      - Models:
+        - POST /tenants/{tid}/models (admin/data_scientist) — {name, experiment_id}
+        - GET /tenants/{tid}/models — query: status, name
+        - GET /tenants/{tid}/models/{mid}
+        - POST /tenants/{tid}/models/{mid}/promote (admin)
+        - POST /tenants/{tid}/models/{model_name}/rollback (admin)
+        - POST /tenants/{tid}/models/{mid}/archive (admin)
+      - Serving:
+        - POST /tenants/{tid}/endpoints (admin)
+        - GET /tenants/{tid}/endpoints
+        - POST /tenants/{tid}/endpoints/{name}/predict — {input_data}
+        - PUT /tenants/{tid}/endpoints/{eid}/traffic — {percentage}
+        - DELETE /tenants/{tid}/endpoints/{eid} (admin) — deactivate
+      - A/B Tests:
+        - POST /tenants/{tid}/ab-tests (admin/data_scientist)
+        - GET /tenants/{tid}/ab-tests — query: status
+        - GET /tenants/{tid}/ab-tests/{tid}
+        - POST /tenants/{tid}/ab-tests/{tid}/evaluate
+        - POST /tenants/{tid}/ab-tests/{tid}/cancel
+      - Drift:
+        - POST /tenants/{tid}/models/{mid}/check-drift
+        - GET /tenants/{tid}/drift-reports — query: model_id, severity
+      - Pipelines:
+        - POST /tenants/{tid}/pipelines (admin/data_scientist) — {name, steps}
+        - GET /tenants/{tid}/pipelines — query: status
+        - GET /tenants/{tid}/pipelines/{pid}
+        - POST /tenants/{tid}/pipelines/{pid}/run
+        - POST /tenants/{tid}/pipelines/{pid}/retry
+      - Hyperparameter Search:
+        - POST /tenants/{tid}/hyperparameter-search — {dataset_id, feature_ids,
+          algorithm, param_grid}. Returns list of experiments.
+      - Health: GET /health — {status: "healthy"}
+      - Audit: GET /tenants/{tid}/audit (admin)
+
+  13. middleware.py — Request middleware
+      - X-Request-ID header on all responses.
+      - Global error handler: {"detail", "error_code", "request_id"}.
+
+  14. requirements.txt — fastapi, uvicorn
+
+  Requirements:
+  - Tenant isolation mandatory. Return 403 on mismatch.
+  - All mutating operations create audit entries.
+  - Use Pydantic models. Use `str` for email (not EmailStr).
+  - HTTP status codes: 201 creation, 200 success, 400 bad input, 401 unauth,
+    403 forbidden, 404 not found, 409 conflict.
+  - App importable as `from main import app`.
+  - Single global DataStore instance in storage.py.
+  - First user in tenant: no auth (bootstrap). Rest require admin.
+  - Model versioning auto-increments per model name within tenant.
+  - Dataset versioning auto-increments per dataset name within tenant.
+  - Experiment metrics must be reproducible (seed random with experiment_id).
+  - All timestamps ISO 8601. All IDs UUID4 strings.
+
+verify:
+  runner: pytest
+  deps:
+    - fastapi==0.115.6
+    - starlette==0.41.3
+    - httpx==0.27.2
+    - uvicorn==0.34.0
+    - pydantic==2.10.4
+    - pydantic-core==2.27.2
+    - email-validator==2.1.1

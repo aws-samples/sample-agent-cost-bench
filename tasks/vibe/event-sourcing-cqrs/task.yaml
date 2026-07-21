@@ -1,0 +1,126 @@
+id: event-sourcing-cqrs
+description: "Greenfield Python event-sourcing/CQRS system: event store, aggregates, projections, command handlers, snapshot optimization, and a CLI interface"
+timeout_minutes: 20
+effort: high
+functional_pass_threshold: 0.75
+
+prompt: |
+  Build a complete event-sourcing and CQRS (Command Query Responsibility
+  Segregation) system in Python. The system manages a simple bank account
+  domain with commands, events, aggregates, projections, and a CLI.
+
+  Create the following files:
+
+  1. events.py — Event definitions
+     - Define a base Event class with fields: event_id (UUID string),
+       aggregate_id (str), event_type (str), timestamp (ISO 8601 string),
+       version (int), and payload (dict).
+     - Define these concrete event types (as classes or factory functions that
+       produce Event instances with the correct event_type string):
+       - "AccountOpened" with payload keys: owner_name (str), initial_balance (float)
+       - "MoneyDeposited" with payload keys: amount (float), description (str)
+       - "MoneyWithdrawn" with payload keys: amount (float), description (str)
+       - "AccountClosed" with payload key: reason (str)
+       - "TransferInitiated" with payload keys: target_account_id (str),
+         amount (float), transfer_id (str)
+       - "TransferCompleted" with payload keys: transfer_id (str)
+
+  2. event_store.py — In-memory event store
+     - Class EventStore with methods:
+       - append(event) — store an event; raise ConcurrencyError if an event
+         with the same aggregate_id and version already exists.
+       - get_events(aggregate_id, after_version=0) — return events for the
+         aggregate with version > after_version, ordered by version ascending.
+       - get_all_events() — return ALL events across all aggregates ordered by
+         timestamp ascending.
+       - get_events_by_type(event_type) — return all events of that type.
+     - Define ConcurrencyError as a custom exception.
+
+  3. aggregates.py — BankAccount aggregate root
+     - Class BankAccount implementing the aggregate root pattern:
+       - Class-level method load(event_store, account_id) that reconstitutes
+         the aggregate from the event store (replaying events).
+       - Properties: account_id, owner_name, balance, is_open, version
+       - Command methods that validate business rules and produce new events
+         (but do NOT directly mutate state):
+         - open_account(owner_name, initial_balance) — class method or static;
+           initial_balance must be >= 0.
+         - deposit(amount, description) — amount must be > 0 and account must
+           be open.
+         - withdraw(amount, description) — amount must be > 0, account must be
+           open, and balance must be sufficient (no overdraft).
+         - close_account(reason) — account must be open and balance must be 0.
+         - initiate_transfer(target_account_id, amount, transfer_id) — same
+           rules as withdraw.
+       - An apply(event) method that mutates internal state based on event_type.
+       - A pending_events list that collects uncommitted events.
+       - A save(event_store) method that appends all pending_events to the store
+         and clears the list.
+     - Raise a DomainError (custom exception) for any business rule violation.
+
+  4. projections.py — Read models updated by replaying events
+     - Class AccountSummaryProjection:
+       - Method handle(event) — processes a single event and updates the read model.
+       - Method get_summary(account_id) — returns a dict with keys: account_id,
+         owner_name, balance, is_open, transaction_count, last_updated.
+       - Method get_all_summaries() — returns a list of all account summary dicts.
+       - Method get_total_balance() — sum of all open account balances.
+     - Class TransactionLogProjection:
+       - Method handle(event) — records deposits, withdrawals, and transfers.
+       - Method get_transactions(account_id, limit=None) — returns list of dicts
+         with keys: timestamp, type ("deposit"/"withdrawal"/"transfer_out"),
+         amount, description, balance_after. Most recent first. If limit is set,
+         return at most that many.
+       - Method get_all_transactions() — all transactions across all accounts,
+         most recent first.
+
+  5. command_handler.py — Command handler that orchestrates the flow
+     - Class CommandHandler initialized with an EventStore and a list of
+       projections.
+     - Methods (each validates, executes, saves, and updates projections):
+       - handle_open_account(owner_name, initial_balance) — returns account_id.
+       - handle_deposit(account_id, amount, description) — returns new balance.
+       - handle_withdraw(account_id, amount, description) — returns new balance.
+       - handle_close_account(account_id, reason) — returns True.
+       - handle_transfer(source_id, target_id, amount, description) — withdraws
+         from source (TransferInitiated), deposits into target (MoneyDeposited
+         with description mentioning transfer), and marks TransferCompleted on
+         source. Returns transfer_id.
+     - After appending events via aggregate.save(), call handle(event) on each
+       projection for each new event.
+
+  6. snapshots.py — Snapshot store for optimization
+     - Class SnapshotStore:
+       - save_snapshot(aggregate_id, version, state_dict) — persist a snapshot.
+       - get_snapshot(aggregate_id) — return the latest snapshot as
+         (version, state_dict) or None.
+     - Modify or document how BankAccount.load() can accept an optional
+       SnapshotStore: if a snapshot exists, restore state from it and only
+       replay events after that version.
+     - BankAccount should have a to_snapshot() method returning a dict and a
+       class method from_snapshot(snapshot_dict) that restores state.
+
+  7. cli.py — Command-line interface
+     - Accept commands via argparse with subcommands:
+       - open --owner <name> --balance <amount>
+       - deposit --account <id> --amount <amount> --description <text>
+       - withdraw --account <id> --amount <amount> --description <text>
+       - transfer --from <id> --to <id> --amount <amount>
+       - close --account <id> --reason <text>
+       - summary [--account <id>]  (all accounts if no id given)
+       - history --account <id> [--limit N]
+     - Print results as JSON to stdout.
+     - The CLI should create its own EventStore, SnapshotStore, projections,
+       and CommandHandler internally (in-memory for each invocation).
+
+  Requirements:
+  - Use only the Python standard library (no external packages).
+  - All IDs should be generated as UUID4 strings.
+  - Timestamps should be ISO 8601 format (use datetime.isoformat()).
+  - Events are immutable once created (use frozen dataclasses, namedtuples, or
+    enforce immutability).
+  - The system must handle concurrent version conflicts via ConcurrencyError.
+  - All monetary amounts are floats rounded to 2 decimal places in events.
+
+verify:
+  runner: pytest

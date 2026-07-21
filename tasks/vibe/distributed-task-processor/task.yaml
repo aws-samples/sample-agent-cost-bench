@@ -1,0 +1,242 @@
+id: distributed-task-processor
+description: "Greenfield multi-tenant distributed task processing system with plugin architecture, event bus, scheduling, metrics, versioned configuration, and comprehensive workflow management"
+timeout_minutes: 30
+effort: high
+functional_pass_threshold: 0.75
+
+prompt: |
+  Build a multi-tenant distributed task processing system using FastAPI. The
+  system processes tasks through a plugin architecture, publishes events via an
+  internal event bus, supports scheduled/recurring tasks, tracks metrics, and
+  manages versioned per-tenant configuration. All data is in-memory.
+
+  Create the following files:
+
+  1. models.py — Data models (use Pydantic BaseModel for all)
+     - Tenant: id (UUID str), name (str), created_at (ISO 8601 str)
+     - User: id (UUID str), tenant_id (str), username (str), email (str),
+       role ("admin" | "operator" | "viewer"), is_active (bool), created_at
+     - Task: id (UUID str), tenant_id (str), task_type (str), payload (dict),
+       priority (int, 1-10, default 5), status ("pending" | "running" |
+       "completed" | "failed" | "cancelled" | "retrying"), result (dict, nullable),
+       error (str, nullable), created_by (str — user_id), created_at,
+       started_at (nullable), completed_at (nullable), retry_count (int, default 0),
+       max_retries (int, default 3), scheduled_at (ISO 8601 str, nullable),
+       recurrence_rule (str, nullable — cron-like: "every_5m", "hourly", "daily")
+     - Event: id (UUID str), tenant_id (str), event_type (str), payload (dict),
+       timestamp (ISO 8601 str), source_task_id (str, nullable)
+     - EventSubscription: id (UUID str), tenant_id (str), event_type (str),
+       callback_name (str), is_active (bool, default True), created_at
+     - PluginConfig: id (UUID str), tenant_id (str), plugin_name (str),
+       version (int), config_data (dict), is_active (bool), created_at,
+       previous_version_id (str, nullable)
+     - MetricPoint: timestamp (ISO 8601 str), tenant_id (str), metric_name (str),
+       value (float), labels (dict)
+     - AuditEntry: id (UUID str), tenant_id (str), user_id (str), action (str),
+       resource_type (str), resource_id (str), timestamp (ISO 8601 str),
+       details (dict)
+
+  2. storage.py — In-memory data store
+     - Class DataStore with thread-safe operations for all models.
+     - CRUD for tenants, users, tasks, events, subscriptions, plugin configs,
+       metrics, and audit entries.
+     - Task queries: by status, by type, by priority range, overdue tasks.
+     - Event queries: by type, by source_task_id, time range.
+     - Plugin config versioning: get current, get by version, list versions,
+       rollback to previous version.
+     - Enforce tenant isolation on all operations.
+     - Use a single global instance: `data_store = DataStore()`
+
+  3. auth.py — Authentication and authorization
+     - Bearer token: "{user_id}:{tenant_id}" base64 encoded.
+     - Functions: create_token, decode_token.
+     - FastAPI dependency get_current_user that validates token, checks active.
+     - RBAC dependency require_role(*roles).
+     - Define AuthenticationError and AuthorizationError.
+
+  4. plugins.py — Plugin system
+     - Base class TaskPlugin with methods:
+       - name (property) -> str
+       - can_handle(task_type: str) -> bool
+       - execute(task: Task, config: dict) -> dict (returns result)
+       - validate_payload(payload: dict) -> bool
+     - Built-in plugins (implement as subclasses):
+       - DataTransformPlugin: handles "data_transform" tasks. Accepts payload
+         with keys "input_data" (list of dicts) and "operations" (list of
+         {"op": "filter"|"map"|"sort"|"aggregate", ...}). Applies operations
+         sequentially. filter: keeps items matching a condition key/value.
+         map: adds/renames fields. sort: sorts by a key. aggregate: returns
+         sum/count/avg of a field.
+       - NotificationPlugin: handles "send_notification" tasks. Accepts payload
+         with "recipients" (list of user_ids), "message" (str), "channel"
+         ("email"|"in_app"). Returns {"delivered_count": int, "failed": []}.
+       - ReportGeneratorPlugin: handles "generate_report" tasks. Accepts
+         payload with "report_type" ("task_summary"|"metrics_summary"),
+         "time_range_hours" (int). Returns a summary dict.
+     - PluginRegistry class:
+       - register(plugin: TaskPlugin)
+       - get_plugin(task_type: str) -> TaskPlugin | None
+       - list_plugins() -> list[str]
+       - All three built-in plugins auto-registered at import time.
+
+  5. event_bus.py — Event bus with pub/sub
+     - Class EventBus:
+       - publish(event: Event) — store event and trigger matching subscribers.
+       - subscribe(tenant_id, event_type, callback_name) — register subscription.
+       - unsubscribe(subscription_id) — deactivate subscription.
+       - get_events(tenant_id, event_type=None, since=None, limit=50) — query.
+       - replay(tenant_id, event_type, since) — return historical events for
+         replay (used for rebuilding state after failures).
+     - When a task transitions state, publish events:
+       - "task.created", "task.started", "task.completed", "task.failed",
+         "task.retrying", "task.cancelled"
+     - Subscribers are callbacks identified by name (no actual function calls —
+       just record that the subscriber was triggered in a delivery log
+       stored in DataStore).
+
+  6. scheduler.py — Task scheduling
+     - Class TaskScheduler:
+       - schedule_task(task) — if task has scheduled_at, mark for future
+         execution. If it has recurrence_rule, set up recurring.
+       - get_due_tasks(tenant_id) — return tasks whose scheduled_at <= now.
+       - get_recurring_tasks(tenant_id) — return tasks with recurrence_rule.
+       - advance_recurring(task) — after a recurring task completes, compute
+         next scheduled_at based on recurrence_rule and create a new pending
+         task (clone with new id, reset status, advance scheduled_at).
+     - Recurrence rules (simple strings, not full cron):
+       - "every_5m" — every 5 minutes
+       - "hourly" — every hour
+       - "daily" — every 24 hours
+     - Function compute_next_run(rule: str, from_time: str) -> str — returns
+       next ISO 8601 timestamp.
+
+  7. executor.py — Task execution engine
+     - Class TaskExecutor:
+       - execute(task: Task) -> Task — runs the appropriate plugin, handles
+         retries on failure, publishes events at each state transition,
+         updates task status/timestamps. Returns updated task.
+       - retry_task(task: Task) -> Task — increment retry_count, set status
+         to "retrying", re-execute after brief pause (simulated — no actual
+         sleep needed, just state transitions).
+       - cancel_task(task: Task) -> Task — set status to "cancelled", publish
+         event.
+     - Execution flow: set status "running" + started_at → find plugin →
+       validate payload → execute → set "completed" + result + completed_at.
+       On exception: if retry_count < max_retries, retry. Else set "failed".
+     - All state changes must publish events via EventBus and create audit entries.
+
+  8. metrics.py — Metrics and observability
+     - Class MetricsCollector:
+       - record(tenant_id, metric_name, value, labels=None) — store MetricPoint.
+       - get_metrics(tenant_id, metric_name, since=None, limit=100) -> list.
+       - get_summary(tenant_id, metric_name, since=None) -> dict with keys:
+         count, sum, avg, min, max.
+       - get_task_metrics(tenant_id) -> dict with keys: total_tasks,
+         by_status (dict of status: count), avg_duration_seconds,
+         by_type (dict of type: count), by_priority (dict of priority: count).
+     - The executor should record metrics:
+       - "task.duration_seconds" on completion
+       - "task.success" (1.0) or "task.failure" (1.0) on outcome
+       - "task.retry_count" on retries
+     - Health check endpoint data: uptime, total tasks processed, error rate.
+
+  9. config_manager.py — Versioned configuration per tenant
+     - Class ConfigManager:
+       - set_config(tenant_id, plugin_name, config_data) -> PluginConfig —
+         creates new version (version = previous + 1), links previous_version_id.
+       - get_config(tenant_id, plugin_name) -> PluginConfig | None — latest.
+       - get_config_version(tenant_id, plugin_name, version) -> PluginConfig.
+       - list_versions(tenant_id, plugin_name) -> list of PluginConfig.
+       - rollback(tenant_id, plugin_name) -> PluginConfig — reverts to
+         previous version (creates a NEW version with old config_data).
+       - diff_versions(tenant_id, plugin_name, v1, v2) -> dict — returns
+         added/removed/changed keys between two config versions.
+
+  10. main.py — FastAPI application with all routes
+      - Auth utility:
+        - POST /auth/token — accepts {username, tenant_id}, returns token
+      - Tenant management (no auth for creation):
+        - POST /tenants — create tenant
+        - GET /tenants/{tenant_id} — get tenant info (auth required)
+      - User management:
+        - POST /tenants/{tenant_id}/users — create user. First user in tenant
+          can be created without auth (bootstrap). Otherwise requires admin.
+        - GET /tenants/{tenant_id}/users — list users (admin/operator)
+      - Task endpoints (auth required, tenant-isolated):
+        - POST /tenants/{tenant_id}/tasks — create task (admin/operator).
+          Body: {task_type, payload, priority, scheduled_at, recurrence_rule}
+        - GET /tenants/{tenant_id}/tasks — list tasks. Query params: status,
+          task_type, priority_min, priority_max, limit (default 20).
+        - GET /tenants/{tenant_id}/tasks/{task_id} — get task detail
+        - POST /tenants/{tenant_id}/tasks/{task_id}/execute — execute task
+          immediately (admin/operator). Returns updated task.
+        - POST /tenants/{tenant_id}/tasks/{task_id}/cancel — cancel (admin)
+        - POST /tenants/{tenant_id}/tasks/{task_id}/retry — manual retry (admin/operator)
+        - POST /tenants/{tenant_id}/tasks/batch — create multiple tasks.
+          Body: {tasks: [{task_type, payload, priority}, ...]}. Returns
+          {created: [{id, task_type}], errors: [{index, error}]}.
+      - Scheduling endpoints:
+        - GET /tenants/{tenant_id}/tasks/due — list due tasks
+        - GET /tenants/{tenant_id}/tasks/recurring — list recurring tasks
+        - POST /tenants/{tenant_id}/tasks/process-due — execute all due tasks,
+          return results array with per-task success/failure.
+      - Event endpoints (auth required):
+        - GET /tenants/{tenant_id}/events — list events. Query params:
+          event_type, since (ISO 8601), limit.
+        - POST /tenants/{tenant_id}/events/subscribe — create subscription.
+          Body: {event_type, callback_name}. Returns subscription.
+        - DELETE /tenants/{tenant_id}/events/subscriptions/{sub_id} — unsubscribe
+        - GET /tenants/{tenant_id}/events/subscriptions — list subscriptions
+      - Plugin endpoints:
+        - GET /tenants/{tenant_id}/plugins — list available plugins
+        - GET /tenants/{tenant_id}/plugins/{plugin_name}/config — get current config
+        - PUT /tenants/{tenant_id}/plugins/{plugin_name}/config — set config
+          (admin). Body: {config_data: dict}. Returns new PluginConfig with version.
+        - GET /tenants/{tenant_id}/plugins/{plugin_name}/config/versions — history
+        - POST /tenants/{tenant_id}/plugins/{plugin_name}/config/rollback —
+          rollback to previous version (admin). Returns new PluginConfig.
+        - GET /tenants/{tenant_id}/plugins/{plugin_name}/config/diff —
+          query params: v1, v2. Returns diff dict.
+      - Metrics endpoints:
+        - GET /tenants/{tenant_id}/metrics/tasks — task metrics summary
+        - GET /tenants/{tenant_id}/metrics/{metric_name} — raw metric points.
+          Query params: since, limit.
+        - GET /tenants/{tenant_id}/metrics/{metric_name}/summary — aggregated.
+      - Health check (no auth):
+        - GET /health — returns {status: "healthy", uptime_seconds, version: "1.0.0"}
+      - Audit (admin only):
+        - GET /tenants/{tenant_id}/audit — audit log. Query params: limit, offset.
+
+  11. middleware.py — Request middleware
+      - Request ID middleware (X-Request-ID header).
+      - Global error handler: {"detail": str, "error_code": str, "request_id": str}.
+
+  12. requirements.txt — listing fastapi and uvicorn
+
+  Requirements:
+  - Tenant isolation is mandatory. Return 403 if tenant_id mismatch.
+  - All mutating operations create audit entries.
+  - Use Pydantic models for request/response. Use `str` for email (not EmailStr).
+  - HTTP status codes: 201 creation, 200 success, 400 bad input, 401 unauth,
+    403 forbidden, 404 not found, 409 conflict (e.g. task already running).
+  - The app must be importable as `from main import app`.
+  - Use a single global DataStore instance in storage.py.
+  - First user in a tenant requires no auth (bootstrap). Subsequent need admin.
+  - Task execution must be atomic: either fully completes or fully fails with
+    proper state transitions and event publishing.
+  - Batch operations must handle partial failures — never abort entire batch.
+  - Plugin execute() should catch exceptions and translate to task failure
+    (not crash the API).
+  - Config rollback creates a new version (not destructive — history preserved).
+  - All timestamps ISO 8601. All IDs UUID4 strings.
+
+verify:
+  runner: pytest
+  deps:
+    - fastapi==0.115.6
+    - starlette==0.41.3
+    - httpx==0.27.2
+    - uvicorn==0.34.0
+    - pydantic==2.10.4
+    - pydantic-core==2.27.2
+    - email-validator==2.1.1

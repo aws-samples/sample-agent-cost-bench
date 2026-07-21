@@ -1,0 +1,264 @@
+id: ecommerce-order-saga
+description: "Greenfield multi-tenant e-commerce backend with product catalog, inventory reservations, shopping cart with expiry, order saga with compensation, payment processing, shipping state machine, coupon engine, recommendation engine, email queue, and analytics"
+timeout_minutes: 30
+effort: high
+functional_pass_threshold: 0.75
+
+prompt: |
+  Build a multi-tenant e-commerce backend using FastAPI. The system handles
+  the full order lifecycle through a saga pattern with compensating transactions,
+  inventory reservations, payment processing, and shipping. All data is in-memory.
+
+  Create the following files:
+
+  1. models.py — Data models (Pydantic BaseModel for all)
+     - Tenant: id (UUID str), name (str), created_at (ISO 8601 str)
+     - User: id (UUID str), tenant_id (str), username (str), email (str),
+       role ("admin" | "customer"), is_active (bool), created_at
+     - Product: id (UUID str), tenant_id (str), name (str), description (str),
+       price (float), category (str), tags (list of str), is_active (bool),
+       created_at
+     - InventoryItem: product_id (str), tenant_id (str), quantity_available (int),
+       quantity_reserved (int), reorder_threshold (int, default 5)
+     - Reservation: id (UUID str), tenant_id (str), product_id (str),
+       user_id (str), quantity (int), status ("active" | "committed" | "released" | "expired"),
+       created_at (ISO 8601 str), expires_at (ISO 8601 str)
+     - CartItem: product_id (str), quantity (int), price_at_add (float)
+     - Cart: id (UUID str), tenant_id (str), user_id (str), items (list of CartItem),
+       created_at, expires_at (ISO 8601 str — 30 min from creation/last update)
+     - Order: id (UUID str), tenant_id (str), user_id (str), items (list of dict
+       with product_id, quantity, unit_price), subtotal (float), discount (float),
+       total (float), status ("pending" | "payment_processing" | "paid" |
+       "shipping" | "shipped" | "delivered" | "cancelled" | "refunded"),
+       payment_id (str, nullable), shipping_id (str, nullable), created_at,
+       updated_at, coupon_code (str, nullable)
+     - Payment: id (UUID str), tenant_id (str), order_id (str), amount (float),
+       method ("credit_card" | "debit" | "wallet"), status ("pending" | "charged" |
+       "failed" | "refunded"), transaction_ref (str), created_at
+     - Shipment: id (UUID str), tenant_id (str), order_id (str), address (str),
+       status ("preparing" | "picked_up" | "in_transit" | "delivered" | "returned"),
+       tracking_number (str), carrier (str), estimated_delivery (str, nullable),
+       created_at, updated_at
+     - Coupon: id (UUID str), tenant_id (str), code (str), discount_type
+       ("percentage" | "fixed"), discount_value (float), min_order_amount (float,
+       default 0), max_uses (int, default -1 meaning unlimited), used_count (int,
+       default 0), is_active (bool), valid_from (ISO 8601 str), valid_until (ISO 8601 str)
+     - EmailMessage: id (UUID str), tenant_id (str), to_user_id (str),
+       subject (str), body (str), status ("queued" | "sent" | "failed"),
+       created_at
+     - AnalyticsEvent: id (UUID str), tenant_id (str), event_type (str),
+       user_id (str, nullable), data (dict), timestamp (ISO 8601 str)
+     - AuditEntry: id (UUID str), tenant_id (str), user_id (str), action (str),
+       resource_type (str), resource_id (str), timestamp (ISO 8601 str),
+       details (dict)
+
+  2. storage.py — In-memory data store
+     - Class DataStore with thread-safe operations for all models.
+     - CRUD for all entities. Product search by category, tags, price range.
+     - Cart operations: add item, remove item, update quantity, get cart, clear.
+     - Order queries: by status, by user.
+     - Enforce tenant isolation on all operations.
+     - Use a single global instance: `data_store = DataStore()`
+
+  3. auth.py — Authentication and authorization
+     - Bearer token: "{user_id}:{tenant_id}" base64 encoded.
+     - Functions: create_token, decode_token.
+     - FastAPI dependency get_current_user.
+     - RBAC dependency require_role(*roles).
+     - Define AuthenticationError and AuthorizationError.
+
+  4. inventory.py — Inventory management with reservations
+     - Class InventoryManager:
+       - add_stock(product_id, quantity) — increase available quantity.
+       - reserve(product_id, user_id, quantity) — decrease available, increase
+         reserved, create Reservation with expires_at = now + 15 minutes.
+         Raise InsufficientStockError if not enough available.
+       - commit_reservation(reservation_id) — mark reservation as committed
+         (stock permanently allocated to an order).
+       - release_reservation(reservation_id) — return reserved stock to
+         available (used when order is cancelled or reservation expires).
+       - get_expired_reservations(tenant_id) — return reservations where
+         expires_at < now and status is still "active".
+       - check_reorder(tenant_id) — return products where quantity_available
+         <= reorder_threshold.
+     - Define InsufficientStockError.
+
+  5. cart.py — Shopping cart with expiry
+     - Class CartManager:
+       - get_or_create_cart(tenant_id, user_id) — return existing cart or
+         create new one. Set expires_at to 30 minutes from now.
+       - add_to_cart(tenant_id, user_id, product_id, quantity) — add item
+         at current product price. Reset expires_at. Reserve inventory.
+       - remove_from_cart(tenant_id, user_id, product_id) — remove item,
+         release its reservation.
+       - update_quantity(tenant_id, user_id, product_id, quantity) — adjust
+         quantity, adjust reservation accordingly.
+       - get_cart(tenant_id, user_id) -> Cart or None.
+       - clear_cart(tenant_id, user_id) — remove all items, release all
+         reservations.
+       - get_expired_carts(tenant_id) — carts where expires_at < now.
+     - Adding to cart should verify product exists and is active.
+
+  6. coupon.py — Coupon/discount engine
+     - Class CouponEngine:
+       - create_coupon(tenant_id, ...) -> Coupon.
+       - validate_coupon(tenant_id, code, order_subtotal) -> dict with
+         keys: valid (bool), discount_amount (float), reason (str if invalid).
+         Checks: code exists, is_active, within valid date range, under max_uses,
+         order meets min_order_amount.
+       - apply_coupon(tenant_id, code, order_subtotal) -> float (discount amount).
+         Increments used_count. Raise CouponError if invalid.
+       - get_coupon(tenant_id, code) -> Coupon or None.
+     - Define CouponError.
+
+  7. order_saga.py — Order saga with compensating transactions
+     - Class OrderSaga:
+       - execute(tenant_id, user_id, cart, coupon_code=None) -> Order
+         Steps (each must succeed or trigger compensation):
+         1. Validate cart is not empty and all products still available.
+         2. Calculate subtotal from cart items.
+         3. Apply coupon if provided (via CouponEngine).
+         4. Commit all inventory reservations from cart items.
+         5. Create order with status "pending".
+         6. Process payment (via PaymentProcessor).
+         7. If payment succeeds: update order to "paid", initiate shipping,
+            send confirmation email, record analytics event.
+         8. If payment fails: release all reservations, cancel order,
+            record failure analytics.
+         9. Clear the cart on success.
+       - compensate(order, completed_steps) — undo each completed step in
+         reverse order. Release reservations, refund payment if charged,
+         restore coupon usage count.
+       - cancel_order(tenant_id, order_id, user_id, reason) -> Order
+         Cancel a paid order: refund payment, return stock, update status,
+         send cancellation email.
+
+  8. payment.py — Payment processing (simulated)
+     - Class PaymentProcessor:
+       - charge(tenant_id, order_id, amount, method) -> Payment
+         Simulated: always succeeds unless amount > 10000 (simulate decline).
+         Generate a fake transaction_ref (UUID).
+       - refund(payment_id) -> Payment — set status to "refunded".
+       - get_payment(payment_id) -> Payment.
+
+  9. shipping.py — Shipping state machine
+     - Class ShippingManager:
+       - create_shipment(tenant_id, order_id, address) -> Shipment
+         Status starts at "preparing". Generate tracking_number (UUID-based).
+         Set carrier to "FastShip" and estimated_delivery to now + 3 days.
+       - advance_status(shipment_id) -> Shipment — move to next valid state:
+         preparing -> picked_up -> in_transit -> delivered.
+         Raise InvalidTransitionError if already delivered or returned.
+       - return_shipment(shipment_id) -> Shipment — set to "returned" (only
+         from in_transit or delivered).
+       - get_shipment(shipment_id) -> Shipment.
+       - get_shipments_by_order(order_id) -> list.
+     - Define InvalidTransitionError.
+
+  10. recommendations.py — Simple recommendation engine
+      - Class RecommendationEngine:
+        - record_purchase(tenant_id, user_id, product_ids) — record that this
+          user bought these products (for collaborative filtering).
+        - get_recommendations(tenant_id, user_id, limit=5) -> list of product_ids
+          Algorithm: find users who bought similar products, recommend products
+          they bought that this user hasn't. If not enough data, return popular
+          products (most purchased) in the tenant.
+        - get_popular(tenant_id, limit=5) -> list of product_ids — most
+          purchased products across all users in tenant.
+
+  11. email_queue.py — Email queue (simulated)
+      - Class EmailQueue:
+        - enqueue(tenant_id, to_user_id, subject, body) -> EmailMessage
+          Status = "queued".
+        - process_queue(tenant_id) -> list of EmailMessage — mark all queued
+          as "sent" (simulated delivery). Return processed messages.
+        - get_messages(tenant_id, user_id=None, status=None) -> list.
+
+  12. analytics.py — Analytics event tracking
+      - Class AnalyticsTracker:
+        - track(tenant_id, event_type, user_id=None, data=None) -> AnalyticsEvent
+        - get_events(tenant_id, event_type=None, user_id=None, since=None,
+          limit=100) -> list.
+        - get_summary(tenant_id, since=None) -> dict with keys:
+          total_events, events_by_type (dict), unique_users, top_products
+          (list of product_ids by purchase count).
+      - Standard event types to track: "product_viewed", "cart_updated",
+        "order_placed", "order_cancelled", "payment_processed", "payment_failed".
+
+  13. main.py — FastAPI application with all routes
+      - Auth: POST /auth/token — {username, tenant_id} -> token
+      - Tenants: POST /tenants (no auth), GET /tenants/{id} (auth)
+      - Users: POST /tenants/{tid}/users (first without auth, rest admin only),
+        GET /tenants/{tid}/users (admin)
+      - Products:
+        - POST /tenants/{tid}/products (admin)
+        - GET /tenants/{tid}/products — query: category, tag, min_price, max_price
+        - GET /tenants/{tid}/products/{pid}
+        - PUT /tenants/{tid}/products/{pid} (admin)
+      - Inventory:
+        - POST /tenants/{tid}/products/{pid}/stock (admin) — {quantity}
+        - GET /tenants/{tid}/inventory/low-stock — products below reorder threshold
+      - Cart:
+        - GET /tenants/{tid}/cart — current user's cart
+        - POST /tenants/{tid}/cart/items — {product_id, quantity}
+        - PUT /tenants/{tid}/cart/items/{product_id} — {quantity}
+        - DELETE /tenants/{tid}/cart/items/{product_id}
+        - DELETE /tenants/{tid}/cart — clear cart
+      - Coupons:
+        - POST /tenants/{tid}/coupons (admin)
+        - POST /tenants/{tid}/coupons/validate — {code, subtotal}
+      - Orders:
+        - POST /tenants/{tid}/orders — place order from cart. Body:
+          {payment_method, shipping_address, coupon_code (optional)}.
+          Executes the saga. Returns order.
+        - GET /tenants/{tid}/orders — list user's orders (or all if admin)
+        - GET /tenants/{tid}/orders/{oid}
+        - POST /tenants/{tid}/orders/{oid}/cancel — cancel order
+      - Shipping:
+        - GET /tenants/{tid}/orders/{oid}/shipment
+        - POST /tenants/{tid}/orders/{oid}/shipment/advance (admin) — advance status
+      - Recommendations:
+        - GET /tenants/{tid}/recommendations — for current user
+        - GET /tenants/{tid}/products/popular — top products
+      - Email:
+        - GET /tenants/{tid}/emails — current user's emails
+        - POST /tenants/{tid}/emails/process (admin) — process queue
+      - Analytics:
+        - GET /tenants/{tid}/analytics — summary
+        - GET /tenants/{tid}/analytics/events — raw events
+      - Health: GET /health — {status: "healthy"}
+      - Audit: GET /tenants/{tid}/audit (admin)
+
+  14. middleware.py — Request middleware
+      - X-Request-ID header on all responses.
+      - Global error handler: {"detail", "error_code", "request_id"}.
+
+  15. requirements.txt — fastapi, uvicorn
+
+  Requirements:
+  - Tenant isolation mandatory. Return 403 on mismatch.
+  - All mutating operations create audit entries.
+  - Use Pydantic models. Use `str` for email (not EmailStr).
+  - HTTP status codes: 201 creation, 200 success, 400 bad input, 401 unauth,
+    403 forbidden, 404 not found, 409 conflict, 422 validation error.
+  - App importable as `from main import app`.
+  - Single global DataStore instance in storage.py.
+  - First user in tenant: no auth needed (bootstrap). Rest require admin.
+  - Order saga must be atomic: all steps succeed or all are compensated.
+  - Cart expires after 30 minutes of inactivity. Inventory reservations
+    expire after 15 minutes.
+  - Coupon validation must check all conditions (date, usage limit, min amount).
+  - All timestamps ISO 8601. All IDs UUID4 strings.
+  - Payment declines for amounts > 10000 (simulated).
+  - All monetary values rounded to 2 decimal places.
+
+verify:
+  runner: pytest
+  deps:
+    - fastapi==0.115.6
+    - starlette==0.41.3
+    - httpx==0.27.2
+    - uvicorn==0.34.0
+    - pydantic==2.10.4
+    - pydantic-core==2.27.2
+    - email-validator==2.1.1
