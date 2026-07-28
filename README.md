@@ -255,11 +255,19 @@ Tasks live under `tasks/`. Two types:
 | `typescript-circuit-breaker` | vibe | TypeScript (Docker) | Brownfield: fix circuit-breaker bugs |
 | `bedrock-sentiment` | vibe | AWS / Python | Migrate Comprehend → Bedrock (rubric graded) |
 | `geotrack-duplicate-device` | vibe | Vue.js / AWS | Prevent duplicate IoT device assignment (rubric) |
+| `event-sourcing-cqrs` | vibe | Python (stdlib) | Greenfield high-complexity: event-sourcing/CQRS bank system (7 files, 32 tests) |
+| `multitenant-rbac-api` | vibe | Python / FastAPI | Greenfield high-complexity: multi-tenant RBAC document API (7 files, 30 tests) |
+| `multitenant-workflow-engine` | vibe | Python / FastAPI | Greenfield high-complexity: workflow state machine + SLA tracking (9 files, 38 tests) |
+| `distributed-task-processor` | vibe | Python / FastAPI | Greenfield high-complexity: plugin task processor + event bus (12 files, 52 tests) |
+| `ecommerce-order-saga` | vibe | Python / FastAPI | Greenfield high-complexity: order saga with compensation (15 files, 66 tests) |
+| `ml-pipeline-orchestrator` | vibe | Python / FastAPI | Greenfield high-complexity: ML pipeline orchestrator + registry (14 files, 64 tests) |
+| `platform-as-a-service` | vibe | Python / FastAPI | Greenfield high-complexity: multi-tenant PaaS backend (16 files, 72 tests) |
 | `auth-feature` | spec-driven | Python | JWT auth: login, logout, refresh |
 
 Select tasks with `task_ids:` in your config. Omit it to run everything.
 
 > Rubric-graded tasks need `judge_model`. Docker tasks need Docker + prebuilt images.
+> The seven high-complexity tasks (`event-sourcing-cqrs` through `platform-as-a-service`) are greenfield multi-file applications (7-16 files, 30-72 pytest scenarios each) that stress multi-file architecture and cross-cutting concerns; they take ~5-22 min per run versus under 2 min for the single-file tasks.
 
 ## How verification works
 
