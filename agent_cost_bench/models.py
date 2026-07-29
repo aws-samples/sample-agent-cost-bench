@@ -100,6 +100,7 @@ class CostSource(str, Enum):
     COPILOT_JSON = "copilot_json"        # parse `copilot --output-format json` JSONL + session-state AIU
     CODEX_JSON = "codex_json"            # parse `codex exec --json` JSONL turn.completed events
     CURSOR_JSON = "cursor_json"          # parse `cursor -p --output-format json` result event
+    OPENCODE_JSON = "opencode_json"      # parse `opencode run --format json` step_finish events
     TOKENS = "tokens"                    # parse token counts via regex, price per-token
     PREMIUM_REQUEST = "premium_request"  # fixed N premium/credit requests per run × price
     KAS_PROXY_METRICS = "kas_proxy_metrics"  # read kas-proxy's metrics.jsonl, correlated by run_id
