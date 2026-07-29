@@ -49,7 +49,10 @@ class ScriptVerifyRunner:
 
         env = os.environ.copy()
         env.update(_STANDARD_ENV)
-        env["WORKSPACE"] = str(self.workspace)
+        # Resolve to absolute so the scorer subprocess (whose cwd is already the
+        # workspace) doesn't double-nest a relative WORKSPACE path.
+        ws_abs = str(self.workspace.resolve())
+        env["WORKSPACE"] = ws_abs
         env["TASK_DIR"] = str(self.task.task_dir)
         # Put the venv's bin first on PATH so console scripts (uvicorn, pytest,
         # alembic, …) and `python` resolve to the isolated verify venv.
@@ -59,7 +62,7 @@ class ScriptVerifyRunner:
 
         # Scorers read the workspace as argv[1]; some also read the task dir as
         # argv[2] (e.g. to diff a seed file). Passing both is harmless to the rest.
-        cmd = [py, str(scorer), str(self.workspace), str(self.task.task_dir)]
+        cmd = [py, str(scorer), ws_abs, str(self.task.task_dir)]
         timeout = min(self.task.timeout_minutes * 60, 300)
 
         if self._logger:
