@@ -769,15 +769,30 @@ class PhaseResult:
 
     @property
     def transient_error(self) -> bool:
+        combined = f"{self.stdout}\n{self.stderr}".lower()
+
+        # Some CLIs report a failed turn in their JSON stream but still exit 0
+        # (observed: Codex emits {"type":"turn.failed"} after an upstream
+        # "internal server error" and exits cleanly). Those runs produce no
+        # usage telemetry, so without this check they were scored as a normal
+        # PASS/FAIL with null cost — silently understating that CLI's spend and
+        # comparing unequal task sets. Detect them regardless of exit code.
+        hard_failures = (
+            '"type":"turn.failed"',
+            '"type": "turn.failed"',
+        )
+        if any(s in combined for s in hard_failures):
+            return True
+
         if self.success:
             return False
-        combined = f"{self.stdout}\n{self.stderr}".lower()
         signatures = (
             "having trouble responding",
             "failed to receive the next message",
             "failed to send the request",
             "dispatch failure",
             "error sending request for url",
+            "internal server error",
             "tool approval required but --no-interactive",
         )
         return any(s in combined for s in signatures)
