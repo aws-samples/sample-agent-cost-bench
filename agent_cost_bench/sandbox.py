@@ -287,6 +287,28 @@ class Workspace:
             if src_dir.exists():
                 shutil.copytree(src_dir, self._base / "src", dirs_exist_ok=True)
 
+        # Ensure the workspace is a git repo. Some CLIs (e.g. OpenCode)
+        # refuse to operate in a non-git directory. This is a no-op for
+        # repo tasks (which already have .git from the clone).
+        self.ensure_git_repo()
+
+    def ensure_git_repo(self) -> None:
+        """Initialize a git repo in the workspace if none exists.
+
+        Some CLIs (e.g. OpenCode) require the working directory to be a git
+        repository. This is a no-op if a .git directory already exists (e.g.
+        from a cloned repo task).
+        """
+        git_dir = self._base / ".git"
+        if git_dir.exists():
+            return
+        subprocess.run(
+            ["git", "init"],
+            cwd=str(self._base),
+            capture_output=True,
+            timeout=30,
+        )
+
     def teardown(self, keep: bool = False) -> None:
         """Kept after a run for inspection; cleaned at the start of the next run."""
         pass
