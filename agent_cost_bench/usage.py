@@ -498,6 +498,7 @@ def compute_codex_cost(
     output_tokens: int,
     reasoning_output_tokens: int,  # informational only — already included in output_tokens
     pricing: Pricing,
+    cache_write_input_tokens: int = 0,
 ) -> float | None:
     """Compute Codex API cost using OpenAI's standard billing formula.
 
@@ -509,10 +510,20 @@ def compute_codex_cost(
 
     Formula::
 
-        uncached_input = input_tokens - cached_input_tokens
-        cost = uncached_input      × usd_per_input_token
-             + cached_input_tokens × usd_per_cached_input_token
-             + output_tokens       × usd_per_output_token
+        fresh_input = input_tokens - cached_input_tokens - cache_write_input_tokens
+        cost = fresh_input              × usd_per_input_token
+             + cached_input_tokens      × usd_per_cached_input_token
+             + cache_write_input_tokens × usd_per_cache_write_token
+             + output_tokens            × usd_per_output_token
+
+    ``cache_write_input_tokens`` is a **distinct slice** of ``input_tokens``:
+    tokens written into the prompt cache on this turn. It is reported separately
+    by ``codex exec --json`` and must not be billed at the full fresh-input
+    rate — in practice it dominates ``input_tokens - cached_input_tokens``
+    (observed: 702,443 of 703,051 tokens across a 21-task run), so treating it
+    as fresh input overstates cost by ~20%. OpenAI does not charge a premium for
+    cache writes, so when ``usd_per_cache_write_token`` is not configured we
+    fall back to the *cached* rate rather than the fresh-input rate.
 
     **Important**: ``reasoning_output_tokens`` is a **subset** of
     ``output_tokens`` (already included — not additive). The API bills all
@@ -539,11 +550,21 @@ def compute_codex_cost(
         else p_in
     )
 
-    uncached_input = max(0, input_tokens - cached_input_tokens)
+    # Cache writes are a distinct slice of input_tokens. OpenAI charges no
+    # premium for them, so default to the cached rate (NOT the fresh-input rate)
+    # when an explicit cache-write rate isn't configured.
+    p_cache_write = (
+        pricing.usd_per_cache_write_token
+        if pricing.usd_per_cache_write_token is not None
+        else p_cached
+    )
+
+    fresh_input = max(0, input_tokens - cached_input_tokens - cache_write_input_tokens)
     cost = (
-        uncached_input        * p_in
-        + cached_input_tokens * p_cached
-        + output_tokens       * p_out
+        fresh_input                  * p_in
+        + cached_input_tokens        * p_cached
+        + cache_write_input_tokens   * p_cache_write
+        + output_tokens              * p_out
         # reasoning_output_tokens intentionally omitted — subset of output_tokens
     )
     return cost
@@ -573,7 +594,7 @@ def parse_codex_usage(stdout: str, stderr: str, pricing: Pricing) -> Usage:
     Timing: Codex does not emit a wall-clock duration in the JSONL stream.
     ``seconds`` is left ``None``; the harness records wall-clock time separately.
     """
-    in_tok = out_tok = reasoning_tok = cached_tok = 0
+    in_tok = out_tok = reasoning_tok = cached_tok = cache_write_tok = 0
     saw_usage = False
 
     for line in (stdout or "").splitlines():
@@ -591,18 +612,23 @@ def parse_codex_usage(stdout: str, stderr: str, pricing: Pricing) -> Usage:
             saw_usage = True
             in_tok += int(usage.get("input_tokens") or 0)
             cached_tok += int(usage.get("cached_input_tokens") or 0)
+            cache_write_tok += int(usage.get("cache_write_input_tokens") or 0)
             out_tok += int(usage.get("output_tokens") or 0)
             reasoning_tok += int(usage.get("reasoning_output_tokens") or 0)
 
     if not saw_usage:
         return Usage()
 
-    cost = compute_codex_cost(in_tok, cached_tok, out_tok, reasoning_tok, pricing)
+    cost = compute_codex_cost(
+        in_tok, cached_tok, out_tok, reasoning_tok, pricing,
+        cache_write_input_tokens=cache_write_tok,
+    )
 
     return Usage(
         cost_usd=cost,
         input_tokens=in_tok or None,
         cached_input_tokens=cached_tok or None,
+        cache_write_input_tokens=cache_write_tok or None,
         output_tokens=out_tok or None,
         reasoning_output_tokens=reasoning_tok or None,
     )
