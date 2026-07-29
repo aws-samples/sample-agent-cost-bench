@@ -10,7 +10,7 @@ from agent_cost_bench.evaluator import (
     SteeringAdherenceEvaluator,
     TaskCompletionEvaluator,
 )
-from agent_cost_bench.models import BenchConfig, CompareMode, ScoringWeights, TaskConfig, TaskMode
+from agent_cost_bench.models import BenchConfig, CompareMode, TaskConfig, TaskMode
 from agent_cost_bench.targets import make_kiro_target
 
 
