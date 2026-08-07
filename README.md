@@ -39,7 +39,8 @@ Cost is always reported two ways: USD and native units (credits / AI Credits / t
 ## Install
 
 ```bash
-cd agent-cost-bench
+git clone <repo link>
+cd sample-agent-cost-bench
 pip install -e .            # installs the `agent-cost-bench` command
 pip install -e ".[dev]"     # optional: dev/test extras
 ```
@@ -65,7 +66,7 @@ Then edit your copy with your specific paths, model IDs, and pricing rates (see 
 Each CLI reads its API key from standard environment variables. Set these in your shell before running:
 
 ```bash
-export KIRO_API_KEY=...          # Kiro (or use `kiro login`)
+export KIRO_API_KEY=...          # Kiro (or use `kiro-cli login`)
 export ANTHROPIC_API_KEY=...     # Claude Code (or use `claude login`)
 export GITHUB_TOKEN=...          # Copilot (or use `copilot auth login`)
 export CURSOR_API_KEY=...        # Cursor (or use `cursor login`)
