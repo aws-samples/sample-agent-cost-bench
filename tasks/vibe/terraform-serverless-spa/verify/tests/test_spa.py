@@ -162,7 +162,9 @@ def test_has_iam_role(raw):
 
 
 def test_lambda_trust_policy(raw):
-    assert "lambda.amazonaws.com" in raw, \
+    # Match the service principal as a complete, quoted token (not a bare
+    # substring) so it can't match at an arbitrary position in the source.
+    assert re.search(r'"lambda\.amazonaws\.com"', raw), \
         "Lambda execution role does not trust lambda.amazonaws.com"
 
 
