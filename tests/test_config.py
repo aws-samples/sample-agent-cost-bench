@@ -213,6 +213,12 @@ def test_cost_source_inferred_from_binary_name(tmp_path, monkeypatch):
         ("codex",         {"usd_per_input_token": 0.000001,
                            "usd_per_output_token": 0.000004},  CostSource.CODEX_JSON),
         ("codex",         {},                                   CostSource.CODEX_JSON),
+        ("cursor",        {},                                   CostSource.CURSOR_JSON),
+        ("cursor-agent",  {},                                   CostSource.CURSOR_JSON),
+        # devin wins over the generic per-token rule below despite having rates
+        ("devin",         {"usd_per_input_token": 0.000005,
+                           "usd_per_output_token": 0.000025},  CostSource.DEVIN_EXPORT),
+        ("devin",         {},                                   CostSource.DEVIN_EXPORT),
         ("my-cli",        {"usd_per_input_token": 0.000001,
                            "usd_per_output_token": 0.000004},  CostSource.TOKENS),
         ("my-cli",        {"usd_per_premium_request": 0.04},   CostSource.PREMIUM_REQUEST),
@@ -240,7 +246,7 @@ def test_explicit_cost_source_wins_over_inference(tmp_path, monkeypatch):
 
 def test_cli_compare_config_no_cost_source_in_yaml(tmp_path, monkeypatch):
     """End-to-end: a cli-compare config with no cost_source fields gets the
-    right sources inferred for kiro-cli, claude, copilot, and codex."""
+    right sources inferred for kiro-cli, claude, copilot, codex, and devin."""
     monkeypatch.chdir(tmp_path)
     tasks_dir = _make_tasks(tmp_path)
     cfg_path = _write(
@@ -268,6 +274,14 @@ def test_cli_compare_config_no_cost_source_in_yaml(tmp_path, monkeypatch):
               usd_per_input_token: 0.000005
               usd_per_output_token: 0.000030
             cli_base_args: ["exec", "--json", "--ephemeral", "-m", "{{model}}", "{{prompt}}"]
+          - name: devin
+            cli_path: devin
+            model_id: claude-opus-4-8
+            pricing:
+              usd_per_input_token: 0.000005
+              usd_per_output_token: 0.000025
+            cli_base_args: ["-p", "{{prompt}}", "--model", "{{model}}",
+                            "--export", "devin-usage.json"]
         tasks_dir: {tasks_dir}
         """,
     )
@@ -277,3 +291,4 @@ def test_cli_compare_config_no_cost_source_in_yaml(tmp_path, monkeypatch):
     assert by_name["claude-code"].cost_source == CostSource.CLAUDE_JSON
     assert by_name["copilot"].cost_source == CostSource.COPILOT_JSON
     assert by_name["codex"].cost_source == CostSource.CODEX_JSON
+    assert by_name["devin"].cost_source == CostSource.DEVIN_EXPORT
