@@ -6,6 +6,8 @@
 #   ./tasks/docker/build-images.sh dotnet     # build one
 #
 # Requires Docker. The host needs NO language SDKs — they live in the images.
+# Set CONTAINER_RUNTIME=finch to build with Finch instead; verification reads the
+# same variable, so the images must be built into whichever daemon will run them.
 # Base images are pulled from their authoritative registries:
 #   dotnet  — mcr.microsoft.com (Microsoft's own registry, no rate limits)
 #   java    — public.ecr.aws/amazoncorretto/amazoncorretto (Amazon Corretto on ECR Public)
@@ -15,11 +17,12 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
+RUNTIME="${CONTAINER_RUNTIME:-docker}"
 
 build() {
   local lang="$1" tag="$2"
   echo "==> Building $tag from $DIR/$lang"
-  docker build -t "$tag" "$DIR/$lang"
+  "$RUNTIME" build -t "$tag" "$DIR/$lang"
 }
 
 targets=("${@:-all}")
@@ -32,4 +35,4 @@ want terraform && build terraform "agent-cost-bench-terraform:1.9"
 want helm   && build helm   "agent-cost-bench-helm:3.16"
 
 echo "Done. Images:"
-docker images | grep -E 'agent-cost-bench-(dotnet|java|node|terraform|helm)' || true
+"$RUNTIME" images | grep -E 'agent-cost-bench-(dotnet|java|node|terraform|helm)' || true
