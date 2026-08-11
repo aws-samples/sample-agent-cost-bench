@@ -81,6 +81,7 @@ _PASSTHROUGH = {
     "functional_pass_threshold",
     "pass_threshold",
     "workspace_base",
+    "devin_permissions_file",
     "output_dir",
     "report_title",
     "open_report",

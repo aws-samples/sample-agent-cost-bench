@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 from ..models import FunctionalTestResult, TaskConfig
-from .docker_env import get_runtime, docker_available, resolve_docker_env
+from .docker_env import docker_available, get_runtime, resolve_docker_env
 from .parsers import parse_results
 
 _CONTAINER_SRC = "/src-ro"

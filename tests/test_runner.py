@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent_cost_bench.models import BenchConfig, CompareMode, CostSource, TaskStatus
+from agent_cost_bench.models import BenchConfig, CompareMode, TaskStatus
 from agent_cost_bench.runner import BenchmarkRunner
 from tests.conftest import mock_target
 

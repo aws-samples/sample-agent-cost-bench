@@ -8,6 +8,7 @@ from agent_cost_bench.models import (
     BenchConfig,
     CompareMode,
     CostSource,
+    PhaseResult,
     Target,
     TaskMode,
 )
@@ -181,3 +182,43 @@ def test_phase_result_timed_out_marker():
     assert ok.timed_out is False
     other = PhaseResult(phase="spec", success=False, duration_seconds=1.0, error="CLI exited with code 2")
     assert other.timed_out is False
+
+
+# ---------------------------------------------------------------------------
+# turn.failed must be treated as transient even when the CLI exits 0
+# ---------------------------------------------------------------------------
+
+
+def test_turn_failed_is_transient_despite_clean_exit():
+    """Codex emits {"type":"turn.failed"} after an upstream error but still exits
+    0. Such runs carry no usage telemetry, so if they aren't flagged the harness
+    scores them PASS/FAIL with null cost — understating that CLI's spend and
+    silently comparing unequal task sets."""
+    p = PhaseResult(
+        phase="vibe",
+        success=True,  # exit code 0
+        duration_seconds=1.0,
+        stdout='{"type":"error","message":"Internal server error"}\n'
+               '{"type":"turn.failed","error":{"message":"Internal server error"}}',
+    )
+    assert p.transient_error is True
+
+
+def test_internal_server_error_on_failure_is_transient():
+    p = PhaseResult(
+        phase="vibe",
+        success=False,
+        duration_seconds=1.0,
+        stderr="unexpected status 500: Internal server error",
+    )
+    assert p.transient_error is True
+
+
+def test_clean_successful_run_is_not_transient():
+    p = PhaseResult(
+        phase="vibe",
+        success=True,
+        duration_seconds=1.0,
+        stdout='{"type":"turn.completed","usage":{"input_tokens":10}}',
+    )
+    assert p.transient_error is False

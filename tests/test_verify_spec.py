@@ -36,8 +36,8 @@ def test_task_config_parses_verify_block(tmp_path):
 
 @pytest.mark.asyncio
 async def test_functional_evaluator_routes_to_docker_runner(tmp_path, monkeypatch):
-    from agent_cost_bench.evaluator.functional import FunctionalEvaluator
     import agent_cost_bench.verify as verify_pkg
+    from agent_cost_bench.evaluator.functional import FunctionalEvaluator
 
     sentinel = FunctionalTestResult(passed=True, score=1.0, summary="from docker runner")
 

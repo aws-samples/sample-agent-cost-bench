@@ -42,13 +42,64 @@ _SKIP_NAMES = {
 
 _SKIP_DIRS = {
     "node_modules", "__pycache__", ".git", ".venv", "venv", "dist", "build",
-    ".kiro", ".pytest_cache", "target", "bin", "obj", ".idea", ".vscode",
+    ".pytest_cache", "target", "bin", "obj", ".idea", ".vscode",
+    # Per-CLI agent state/config the harness or the CLI itself seeds into the
+    # workspace. Grading these would score the harness, not the model, and it
+    # is not symmetric across runners — .devin/config.json is written by
+    # devin_permissions_file, so leaving it in made the judge attribute the
+    # seeded policy to Devin while Kiro's .kiro was already excluded.
+    ".kiro", ".devin", ".claude", ".cursor", ".codeium", ".copilot", ".agents",
 }
+
+def _usage_artifact_names(config) -> set[str]:
+    """Filenames a CLI writes into the workspace purely so the harness can read
+    cost from them (currently Devin's ``--export`` ATIF file).
+
+    These must never reach the judge. They are large — a single Devin export ran
+    to 127 KB, more than twice the whole diff budget — so an unfiltered export
+    consumes the entire cap and the model's actual code changes get truncated
+    away, scoring the task 0.0 for work that was in fact completed. Read from
+    config rather than hardcoded so a renamed ``devin_export_file`` stays
+    covered."""
+    names: set[str] = set()
+    for target in getattr(config, "targets", None) or []:
+        pricing = getattr(target, "pricing", None)
+        name = getattr(pricing, "devin_export_file", None) if pricing else None
+        if name:
+            names.add(Path(name).name)
+    return names
+
 
 def _is_hidden_dir(name: str) -> bool:
     """True for hidden directories (start with '.') — version-control metadata,
     IDE config, and vendor context docs that are never model-produced code."""
     return name.startswith(".")
+
+
+def _diff_header_paths(header: str, roots: list[str]) -> list[str]:
+    """The two paths in a ``diff --git a/X b/Y`` line, relative to their root.
+
+    ``git diff --no-index`` prints the operands as given, so with absolute
+    operands the header carries the full host path: ``a/Users/me/.cache/bench/
+    ws/main.py``. Matching skip tokens against that means the *workspace's own
+    prefix* is searched for words like ``.cache``, ``build``, or ``venv`` — a
+    real run under ``workspace_base: ~/.cache/...`` had every file treated as
+    hidden and scored 0.0 with the code sitting right there. Strip the ``a/``
+    /``b/`` marker and the root, so only the model's own subpaths are matched.
+
+    Falls back to the raw header when a root doesn't match, which over-includes
+    rather than dropping a submission — the safe direction for a grader."""
+    out: list[str] = []
+    for token in header.split():
+        if len(token) < 2 or token[0] not in "ab" or token[1] != "/":
+            continue
+        path = token[2:]
+        for root in roots:
+            if path.startswith(root + "/"):
+                path = path[len(root) + 1:]
+                break
+        out.append(path)
+    return out or [header]
 
 _MAX_FILES = 60
 _MAX_FILE_CHARS = 6000
@@ -75,6 +126,7 @@ class RubricEvaluator:
         self.config = config
         self._logger = logger
         self._judge = LLMJudge(config, logger=logger, task_id=task.id, model_label=model_label)
+        self._skip_names = _SKIP_NAMES | _usage_artifact_names(config)
 
     async def evaluate(self) -> FunctionalTestResult:
         criteria = list(self.task.quality.rubric) if self.task.quality else []
@@ -159,12 +211,19 @@ class RubricEvaluator:
             await self._logger.log_event(
                 f"RUBRIC DIFF  {self.task.id}  baseline={baseline}"
             )
-        return self._filter_diff(out_b.decode("utf-8", errors="replace"))
+        return self._filter_diff(
+            out_b.decode("utf-8", errors="replace"),
+            roots=[str(baseline).lstrip("/"), str(self.workspace).lstrip("/")],
+        )
 
-    def _filter_diff(self, diff: str) -> str:
+    def _filter_diff(self, diff: str, roots: list[str] | None = None) -> str:
         """Drop diff sections for vendored/generated/noise paths and enforce the
         overall size cap. Path matching is by exact path *segment* so substrings
-        (e.g. 'bin' inside 'cabinet') don't cause false drops."""
+        (e.g. 'bin' inside 'cabinet') don't cause false drops.
+
+        ``roots`` are the diff operands, stripped from each header path first so
+        the host prefix is never matched against the skip lists (see
+        ``_diff_header_paths``)."""
         if not diff.strip():
             return ""
 
@@ -184,8 +243,10 @@ class RubricEvaluator:
         total = 0
         for sec in sections:
             header = sec.splitlines()[0] if sec else ""
-            tokens = set(re.split(r"[\s/]+", header))
-            if tokens & _SKIP_DIRS or tokens & _SKIP_NAMES:
+            tokens: set[str] = set()
+            for path in _diff_header_paths(header, roots or []):
+                tokens |= set(re.split(r"[\s/]+", path))
+            if tokens & _SKIP_DIRS or tokens & self._skip_names:
                 continue
             if total + len(sec) > _MAX_DIFF_CHARS:
                 kept.append(f"\n… [diff truncated: exceeds {_MAX_DIFF_CHARS} chars]\n")
@@ -243,12 +304,19 @@ class RubricEvaluator:
                 break
             if not path.is_file():
                 continue
+            # Match only the path *below* the collection root. path.parts on the
+            # absolute path also spans the host prefix, so a workspace_base like
+            # ~/.cache/agent-cost-bench made _is_hidden_dir(".cache") true for
+            # every file and the judge was told "no files were produced" while
+            # the model's code sat in the workspace — a silent 0.0 on work that
+            # was done. Same class of bug as the diff-header matching above.
+            rel = path.relative_to(root)
             if any(
                 part in _SKIP_DIRS or part.startswith(".venv") or _is_hidden_dir(part)
-                for part in path.parts
+                for part in rel.parts
             ):
                 continue
-            if path.name in _SKIP_NAMES:
+            if path.name in self._skip_names:
                 continue
             if path.suffix.lower() not in _INCLUDE_EXTS and path.name not in _INCLUDE_NAMES:
                 continue
@@ -256,7 +324,6 @@ class RubricEvaluator:
                 text = path.read_text(encoding="utf-8", errors="replace")
             except Exception:
                 continue
-            rel = path.relative_to(root)
             snippet = text[:_MAX_FILE_CHARS]
             if len(text) > _MAX_FILE_CHARS:
                 snippet += f"\n… [{len(text) - _MAX_FILE_CHARS} chars truncated]"

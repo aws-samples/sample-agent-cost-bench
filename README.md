@@ -14,7 +14,7 @@ Bring any model, any CLI, and any use case — a real GitHub repo with your own 
 
 The framework is designed to be flexible:
 
-- **Any CLI** — Kiro, Claude Code, GitHub Copilot, OpenAI Codex - Currently supported CLI's.
+- **Any CLI** — Kiro, Claude Code, GitHub Copilot, Cursor, OpenAI Codex, Devin - Currently supported CLI's.
 - **Any model** — Anthropic (Claude), OpenAI (o-series, GPT-5.x) or anything your CLI exposes.
 - **Any use case** — greenfield tasks included out of the box, or bring your own GitHub repo (public or private). The framework clones it, hands it to the model, and verifies the result.
 - **Multiple verification options** — pytest, Docker containers, custom scorers, or LLM-judge rubrics. Pick the one that fits; no verification code is required for rubric-graded tasks.
@@ -25,7 +25,7 @@ Cost is always reported two ways: USD and native units (credits / AI Credits / t
 
 - **Python 3.10+**
 - **The coding CLI(s) you want to benchmark**, installed and logged in:
-  - `cli-compare`: the CLIs you list as runners (e.g. `kiro-cli`, `claude`, `copilot`, `codex`)
+  - `cli-compare`: the CLIs you list as runners (e.g. `kiro-cli`, `claude`, `copilot`, `agent`, `codex`, `devin`)
   - `model-compare`: the Kiro CLI
 - **Docker** — only if you run the multi-language tasks (C#/.NET, Java,
   TypeScript, Terraform, Helm). Build images once with `./tasks/docker/build-images.sh`.
@@ -34,12 +34,13 @@ Cost is always reported two ways: USD and native units (credits / AI Credits / t
   in your config to a path under your home directory (e.g. `~/bench-workspaces`)
   since Finch on macOS can only mount volumes from the home directory.
 
-> **Cost warning:** Each CLI you benchmark requires your own active subscription or license (Kiro, Claude Code, GitHub Copilot, OpenAI Codex, etc.). Running benchmarks consumes credits, tokens, or premium requests against your account. A full run across all tasks can use significant resources. Start with a small subset (`task_ids:`) to estimate cost before running the full suite.
+> **Cost warning:** Each CLI you benchmark requires your own active subscription or license (Kiro, Claude Code, GitHub Copilot, Cursor, OpenAI Codex, Devin, etc.). Running benchmarks consumes credits, tokens, or premium requests against your account. A full run across all tasks can use significant resources. Start with a small subset (`task_ids:`) to estimate cost before running the full suite.
 
 ## Install
 
 ```bash
-cd agent-cost-bench
+git clone <repo link>
+cd sample-agent-cost-bench
 pip install -e .            # installs the `agent-cost-bench` command
 pip install -e ".[dev]"     # optional: dev/test extras
 ```
@@ -51,7 +52,7 @@ pip install -e ".[dev]"     # optional: dev/test extras
 Example configs are provided as templates. **Copy them and fill in your specific details** — never edit the `*.example.yaml` files directly (they serve as reference).
 
 ```bash
-# For CLI comparison (Kiro vs Claude Code vs Copilot vs Cursor vs Codex):
+# For CLI comparison (Kiro vs Claude Code vs Copilot vs Cursor vs Codex vs Devin):
 cp config.cli-compare.example.yaml config.cli-compare.yaml
 
 # For model comparison (multiple models inside the Kiro CLI):
@@ -65,11 +66,12 @@ Then edit your copy with your specific paths, model IDs, and pricing rates (see 
 Each CLI reads its API key from standard environment variables. Set these in your shell before running:
 
 ```bash
-export KIRO_API_KEY=...          # Kiro (or use `kiro login`)
+export KIRO_API_KEY=...          # Kiro (or use `kiro-cli login`)
 export ANTHROPIC_API_KEY=...     # Claude Code (or use `claude login`)
 export GITHUB_TOKEN=...          # Copilot (or use `copilot auth login`)
 export CURSOR_API_KEY=...        # Cursor (or use `cursor login`)
 export OPENAI_API_KEY=...        # Codex (or use `codex auth login`)
+# Devin: use `devin auth login` (no env-var equivalent)
 ```
 
 The harness inherits the parent shell's environment, so all CLIs pick up their keys automatically — no per-runner `env:` block needed.
@@ -87,8 +89,9 @@ Pricing rates are volatile and change over time. Check each vendor's current pri
 | **GitHub Copilot** | 1 AI Credit = $0.01 USD|
 | **Cursor** | Token-level rates (see below) | [cursor.com/docs/models-and-pricing](https://cursor.com/docs/models-and-pricing) |
 | **OpenAI Codex** | Token-level rates (see below) | [platform.openai.com/docs/pricing](https://platform.openai.com/docs/pricing) |
+| **Devin** | Token-level rates (see below) | `devin models list` prints per-MTok rates per model slug |
 
-#### Token-level pricing (Cursor and Codex)
+#### Token-level pricing (Cursor, Codex, and Devin)
 
 These CLIs report raw token counts; the harness computes cost using rates you supply. Example for Cursor with Opus 4.8:
 
@@ -123,7 +126,7 @@ The harness automatically detects how to read cost from each CLI based on its bi
 agent-cost-bench cli-compare run config.cli-compare.yaml
 ```
 
-The example config defines runners for Kiro, Claude Code, Copilot, and Cursor. Cost is auto-detected from the binary name — you provide the CLI path, model ID, and pricing rates:
+The example config defines runners for Kiro, Claude Code, Copilot, Cursor, and Devin. Cost is auto-detected from the binary name — you provide the CLI path, model ID, and pricing rates:
 
 ```yaml
 runners:
@@ -165,9 +168,41 @@ runners:
       usd_per_output_token:       0.000025
     cli_base_args: ["-p", "{prompt}", "--trust", "--yolo",
                     "--output-format", "json", "--model", "{model}"]
+
+  - name: devin
+    display_name: "Devin (claude-opus-4.8)"
+    cli_path: devin
+    model_id: claude-opus-4-8
+    pricing:
+      usd_per_input_token:        0.000005
+      usd_per_cached_input_token: 0.0000005
+      usd_per_output_token:       0.000025
+      devin_export_file: devin-usage.json
+    cli_base_args: ["-p", "{prompt}", "--model", "{model}",
+                    "--export", "devin-usage.json"]
 ```
 
-> **Note:** Cursor encodes effort/thinking level as part of the model slug (e.g., `claude-opus-4-8-high`), not as a separate flag. The harness auto-appends the task's effort level to the `model_id` unless you bake it in yourself.
+> **Note:** Cursor and Devin encode effort/thinking level as part of the model slug (e.g., `claude-opus-4-8-high`), not as a separate flag. The harness auto-appends the task's effort level to the `model_id` unless you bake it in yourself. This is what keeps a cross-CLI run fair — every runner ends up on the same model at the same reasoning effort even though they spell it differently.
+
+#### Devin specifics
+
+Devin has no JSON output mode, so cost comes from the ATIF conversation export written by `--export <file>`. The path is relative to the CLI's working directory (the run's workspace), and `pricing.devin_export_file` must match the `--export` filename so the parser can find it.
+
+`devin models list` publishes only input and output rates (`--format json` exposes the same `cost_summary` string and nothing more), so **you must supply `usd_per_cached_input_token` yourself** — use the underlying provider's published cache-read price. This matters more than it looks: `total_prompt_tokens` is inclusive of `total_cached_tokens`, and cache reads are typically ~90% of prompt tokens in an agentic run. Omitting the rate makes the parser fall back to the full input price and overstates Devin's cost by roughly 5x, which would make a CLI comparison meaningless.
+
+Devin's non-interactive mode **silently rejects any tool call that would need approval**, which would fail every task. Rather than hand it a blanket auto-approve flag, the harness copies a scoped permission policy into each workspace as `.devin/config.json`:
+
+```yaml
+devin_permissions_file: tasks/devin/config.json   # default
+```
+
+The shipped policy allows workspace reads/writes plus an explicit allowlist of build and test commands (`python`, `pytest`, `npm`, `go`, `cargo`, `make`, `git`, common POSIX utilities, …) and **denies** credential paths (`~/.ssh`, `~/.aws`, `**/.env`, `**/*.pem`), config-directory writes, and `sudo` / `ssh` / `git push` / `gh` / `aws`. Deny rules win over allow rules. If your tasks need a command that isn't listed, add an `Exec(<command>)` entry — an unlisted command is rejected, not prompted. Set `devin_permissions_file: ""` to skip the copy entirely.
+
+The policy allows the shell, which makes that deny list a speed bump rather than a boundary: `bash -c "<denied command>"` still runs, because the inner command is only an argument. Containment comes from the disposable per-run workspace, not from the policy — do not run the suite against a `workspace_base` holding anything you care about. Denying the shell was tried and rejected: an allowlist cannot be both airtight and complete across a heterogeneous task suite, and the gaps scored as model failures rather than policy failures. For the same reason `curl`/`wget` are **allowed** — denying them bought nothing once the shell was permitted, while the other runners already have network access under `--trust-all-tools` / `--dangerously-skip-permissions`, so the deny only manufactured a capability gap in the runner being measured. Egress restriction, if you want it, belongs at the sandbox or network layer and must apply to every runner equally. `tasks/devin/config.json` documents the full reasoning and the CLI's exact matching semantics.
+
+Print mode cannot display Devin's interactive workspace-trust prompt and aborts in an untrusted directory. Trust is inherited by child directories, so run `devin` once interactively in your `workspace_base` and approve it — every per-run workspace created underneath is then trusted, and no flag is needed. Prefer this to `--respect-workspace-trust false`, which turns the check off for the whole run; add the flag only where nobody can approve interactively, such as CI.
+
+> Do **not** point Devin's `--config` flag at a file you intend to commit: the CLI writes session state (including your `org_id`) back into it.
 
 ### model-compare — same CLI, different models
 
@@ -340,6 +375,7 @@ AGENT_COST_BENCH_RESULT: {"score": 0.7, "checkpoints": {...}, "summary": "..."}
 | `copilot` | `--output-format json` JSONL + `~/.copilot/session-state/` `totalNanoAiu` |
 | `codex` | `codex exec --json` → `turn.completed` token counts |
 | `cursor` / `agent` | `-p --output-format json` → `usage` object with token counts |
+| `devin` | `--export <file>` ATIF conversation export → `final_metrics` token counts |
 | Any + per-token pricing | Custom regex with `(?P<input>...)` / `(?P<output>...)` groups |
 
 
