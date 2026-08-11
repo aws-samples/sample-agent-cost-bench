@@ -132,3 +132,84 @@ def test_resolve_spec_dir_prefers_seeded_task_id(tmp_path):
     (specs / "task-101").mkdir(parents=True)
     (specs / "task-101" / "requirements.md").write_text("# seeded\n")
     assert resolve_spec_dir(tmp_path, "task-101") == specs / "task-101"
+
+
+def _rubric_evaluator(tmp_path, export_file="devin-usage.json"):
+    from agent_cost_bench.evaluator.rubric import RubricEvaluator
+    from agent_cost_bench.models import Pricing
+
+    target = make_kiro_target("m")
+    target.pricing = Pricing(devin_export_file=export_file)
+    cfg = BenchConfig(mode=CompareMode.CLI_COMPARE, targets=[target])
+    return RubricEvaluator(_task(tmp_path), tmp_path, cfg)
+
+
+def test_rubric_diff_excludes_harness_artifacts(tmp_path):
+    """The judge must never see workspace files the harness put there.
+
+    Two of them scored a completed task 0.0 in a real run: the seeded
+    .devin/config.json was graded as Devin's own work (while .kiro was already
+    excluded — an asymmetry between runners), and the 127 KB --export usage file
+    consumed the entire diff budget so the model's actual code changes were
+    truncated away.
+    """
+    ev = _rubric_evaluator(tmp_path)
+    diff = (
+        "diff --git a/ws/.devin/config.json b/ws/.devin/config.json\n+seeded policy\n"
+        "diff --git a/ws/devin-usage.json b/ws/devin-usage.json\n+huge export\n"
+        "diff --git a/ws/lambdas/index.py b/ws/lambdas/index.py\n+bedrock_runtime = client()\n"
+    )
+    filtered = ev._filter_diff(diff)
+    assert "bedrock_runtime" in filtered      # the model's real change survives
+    assert "seeded policy" not in filtered
+    assert "huge export" not in filtered
+
+
+def test_rubric_skips_renamed_usage_export(tmp_path):
+    """The export name is configurable, so it is read from config rather than
+    hardcoded — renaming it must not re-expose it to the judge."""
+    ev = _rubric_evaluator(tmp_path, export_file="custom-usage.json")
+    diff = (
+        "diff --git a/ws/custom-usage.json b/ws/custom-usage.json\n+huge export\n"
+        "diff --git a/ws/main.py b/ws/main.py\n+real code\n"
+    )
+    filtered = ev._filter_diff(diff)
+    assert "real code" in filtered
+    assert "huge export" not in filtered
+
+
+def test_rubric_diff_ignores_skip_words_in_the_host_prefix(tmp_path):
+    """Skip matching must apply below the diff roots, not to the whole host path.
+
+    git diff --no-index echoes absolute operands into the header, so a
+    workspace_base such as ~/.cache/agent-cost-bench/build put 'build' and
+    '.cache' in every path and the model's real change was dropped as vendored
+    output — a 0.0 caused only by where the harness happened to put the run.
+    """
+    ev = _rubric_evaluator(tmp_path)
+    roots = ["home/u/.cache/bench/build/base", "home/u/.cache/bench/build/ws"]
+    diff = (
+        "diff --git a/home/u/.cache/bench/build/base/app.py"
+        " b/home/u/.cache/bench/build/ws/app.py\n+real code\n"
+        "diff --git a/home/u/.cache/bench/build/ws/build/out.js"
+        " b/home/u/.cache/bench/build/ws/build/out.js\n+generated\n"
+    )
+    filtered = ev._filter_diff(diff, roots=roots)
+    assert "real code" in filtered       # survives despite 'build' in the prefix
+    assert "generated" not in filtered   # a real build/ dir is still dropped
+
+
+def test_rubric_collects_files_under_a_hidden_workspace_root(tmp_path):
+    """Whole-file collection has the same root-relative requirement.
+
+    With workspace_base under ~/.cache, every path contained a '.cache' segment,
+    so _is_hidden_dir matched and the judge was told 'no files were produced'
+    while notes_cli.py sat in the workspace — an observed silent 0.0.
+    """
+    ws = tmp_path / ".cache" / "bench" / "ws"
+    (ws / ".devin").mkdir(parents=True)
+    (ws / "notes_cli.py").write_text("print('real code')\n")
+    (ws / ".devin" / "config.json").write_text("{}\n")
+    collected = _rubric_evaluator(tmp_path)._collect_files(ws)
+    assert "real code" in collected
+    assert "config.json" not in collected  # hidden dirs inside the ws still skip

@@ -11,6 +11,7 @@ from agent_cost_bench.usage import (
     parse_codex_usage,
     compute_codex_cost,
     parse_copilot_usage,
+    parse_devin_usage,
     parse_kiro_usage,
     parse_token_regex_usage,
     parse_usage,
@@ -447,4 +448,153 @@ def test_codex_dispatch_via_parse_usage():
     assert u.reasoning_output_tokens == 50  # informational only
     # uncached = 2000 - 500 = 1500; reasoning already in output_tokens
     expected = 1500 * 0.0000011 + 500 * 0.000000275 + 200 * 0.0000044
+    assert abs(u.cost_usd - expected) < 1e-12
+
+
+# ---------------------------------------------------------------------------
+# devin_export cost source
+# ---------------------------------------------------------------------------
+
+
+# Opus 4.8/5 through Devin: $5 / MTok in, $25 / MTok out (`devin models list`).
+_DEVIN_PRICING = dict(
+    usd_per_input_token=0.000005,
+    usd_per_cached_input_token=0.0000005,
+    usd_per_output_token=0.000025,
+)
+
+
+def _write_devin_export(workspace, *, filename="devin-usage.json", **metrics):
+    """Write a minimal ATIF export with the given final_metrics."""
+    export = {
+        "schema_version": "ATIF-v1.7",
+        "agent": {"name": "devin", "model_name": "Claude Opus 5"},
+        "steps": [],
+        "final_metrics": metrics,
+    }
+    path = workspace / filename
+    path.write_text(json.dumps(export), encoding="utf-8")
+    return path
+
+
+def test_devin_export_cost(tmp_path):
+    """cost = uncached_input × p_in + cached × p_cached + completion × p_out.
+    total_prompt_tokens INCLUDES total_cached_tokens (same as Codex).
+    """
+    _write_devin_export(
+        tmp_path,
+        total_prompt_tokens=19249, total_completion_tokens=1204,
+        total_cached_tokens=12262, total_steps=9,
+    )
+    u = parse_devin_usage(Pricing(**_DEVIN_PRICING), tmp_path)
+    assert u.input_tokens == 19249
+    assert u.cached_input_tokens == 12262
+    assert u.output_tokens == 1204
+    # uncached = 19249 - 12262 = 6987
+    expected = 6987 * 0.000005 + 12262 * 0.0000005 + 1204 * 0.000025
+    assert abs(u.cost_usd - expected) < 1e-12
+
+
+def test_devin_export_no_cached_rate_falls_back_to_input_rate(tmp_path):
+    """Without usd_per_cached_input_token, cached tokens bill at the input rate."""
+    _write_devin_export(
+        tmp_path,
+        total_prompt_tokens=5000, total_completion_tokens=300,
+        total_cached_tokens=2000,
+    )
+    pricing = Pricing(usd_per_input_token=0.000005, usd_per_output_token=0.000025)
+    u = parse_devin_usage(pricing, tmp_path)
+    # All 5000 prompt tokens at p_in (no cached discount)
+    expected = 5000 * 0.000005 + 300 * 0.000025
+    assert abs(u.cost_usd - expected) < 1e-12
+
+
+def test_devin_export_cached_exceeding_prompt_clamps_to_zero(tmp_path):
+    """A cached count larger than the prompt total must not produce a negative
+    uncached charge."""
+    _write_devin_export(
+        tmp_path,
+        total_prompt_tokens=1000, total_completion_tokens=0,
+        total_cached_tokens=4000,
+    )
+    u = parse_devin_usage(Pricing(**_DEVIN_PRICING), tmp_path)
+    assert u.cost_usd == 4000 * 0.0000005
+
+
+def test_devin_export_no_pricing_returns_tokens_only(tmp_path):
+    """Without pricing rates, token counts are still reported (cost_usd=None)."""
+    _write_devin_export(
+        tmp_path,
+        total_prompt_tokens=5000, total_completion_tokens=300,
+        total_cached_tokens=1000,
+    )
+    u = parse_devin_usage(Pricing(), tmp_path)
+    assert u.input_tokens == 5000
+    assert u.cached_input_tokens == 1000
+    assert u.output_tokens == 300
+    assert u.cost_usd is None
+
+
+def test_devin_export_missing_file_returns_empty_usage(tmp_path):
+    """A run where the CLI died before writing the export reports no cost data
+    rather than a misleading zero."""
+    u = parse_devin_usage(Pricing(**_DEVIN_PRICING), tmp_path)
+    assert u.cost_usd is None
+    assert u.input_tokens is None
+
+
+def test_devin_export_no_workspace_returns_empty_usage():
+    assert parse_devin_usage(Pricing(**_DEVIN_PRICING), None).cost_usd is None
+
+
+def test_devin_export_malformed_json_returns_empty_usage(tmp_path):
+    (tmp_path / "devin-usage.json").write_text("{not json", encoding="utf-8")
+    u = parse_devin_usage(Pricing(**_DEVIN_PRICING), tmp_path)
+    assert u.cost_usd is None
+    assert u.input_tokens is None
+
+
+def test_devin_export_missing_final_metrics_returns_empty_usage(tmp_path):
+    """An export truncated before final_metrics (e.g. session still running)."""
+    (tmp_path / "devin-usage.json").write_text(
+        json.dumps({"schema_version": "ATIF-v1.7", "steps": []}), encoding="utf-8"
+    )
+    u = parse_devin_usage(Pricing(**_DEVIN_PRICING), tmp_path)
+    assert u.cost_usd is None
+    assert u.input_tokens is None
+
+
+def test_devin_export_honours_custom_export_filename(tmp_path):
+    """pricing.devin_export_file must match the runner's --export path."""
+    _write_devin_export(
+        tmp_path, filename="usage.json",
+        total_prompt_tokens=2000, total_completion_tokens=100,
+        total_cached_tokens=0,
+    )
+    default = parse_devin_usage(Pricing(**_DEVIN_PRICING), tmp_path)
+    assert default.input_tokens is None  # looked for devin-usage.json
+    custom = Pricing(**_DEVIN_PRICING, devin_export_file="usage.json")
+    assert parse_devin_usage(custom, tmp_path).input_tokens == 2000
+
+
+def test_devin_dispatch_via_parse_usage(tmp_path):
+    """parse_usage routes CostSource.DEVIN_EXPORT to the devin parser, passing
+    the run's workspace through so the export can be located."""
+    _write_devin_export(
+        tmp_path,
+        total_prompt_tokens=8000, total_completion_tokens=500,
+        total_cached_tokens=3000,
+    )
+    t = make_cli_target({
+        "name": "devin",
+        "cli_path": "devin",
+        "model_id": "claude-opus-4-8",
+        "pricing": _DEVIN_PRICING,
+    })
+    assert t.cost_source == CostSource.DEVIN_EXPORT  # inferred from cli_path
+    u = parse_usage(t, "", "", workspace=tmp_path)
+    assert u.input_tokens == 8000
+    assert u.cached_input_tokens == 3000
+    assert u.output_tokens == 500
+    expected = 5000 * 0.000005 + 3000 * 0.0000005 + 500 * 0.000025
     assert abs(u.cost_usd - expected) < 1e-12

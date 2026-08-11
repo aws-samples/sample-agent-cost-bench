@@ -247,9 +247,40 @@ class Workspace:
     def agents_dir(self) -> Path:
         return self.kiro_dir / "agents"
 
+    @property
+    def devin_dir(self) -> Path:
+        return self._base / ".devin"
+
+    def _install_devin_permissions(self) -> None:
+        """Copy the Devin CLI permission policy into the workspace as
+        ``.devin/config.json``.
+
+        The Devin CLI has no blanket auto-approve flag we're willing to use in a
+        benchmark (``--permission-mode dangerous`` removes every guardrail), and
+        in non-interactive mode it silently rejects any tool call that would
+        need approval. Devin reads ``.devin/config.json`` from the project
+        directory as team-level policy, so dropping the repo's vetted allow/deny
+        rules into each workspace pre-approves exactly the build/test commands a
+        coding task needs while keeping credential paths denied.
+
+        Written for every run (like the ``.kiro`` dirs above) — CLIs other than
+        Devin simply ignore the directory. Missing or unreadable policy files
+        are not fatal: the run proceeds and Devin falls back to its default
+        Normal mode, where rejected tool calls show up as warnings on stderr.
+        """
+        src = getattr(self.config, "devin_permissions_file", "") or ""
+        if not src:
+            return
+        src_path = Path(src).expanduser()
+        if not src_path.is_file():
+            return
+        self.devin_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src_path, self.devin_dir / "config.json")
+
     def setup(self) -> None:
         """Create the workspace and seed task fixtures."""
         self._base.mkdir(parents=True, exist_ok=True)
+        self._install_devin_permissions()
 
         task_dir = self.task.task_dir
         if task_dir is None:
