@@ -7,9 +7,9 @@ import json
 from agent_cost_bench.models import CostSource, Pricing, Target
 from agent_cost_bench.targets import make_cli_target
 from agent_cost_bench.usage import (
+    compute_codex_cost,
     parse_claude_usage,
     parse_codex_usage,
-    compute_codex_cost,
     parse_copilot_usage,
     parse_devin_usage,
     parse_kiro_usage,
@@ -405,7 +405,6 @@ def test_codex_empty_output_returns_empty_usage():
 
 def test_compute_codex_cost_formula():
     """Verify compute_codex_cost directly — reasoning tokens not double-billed."""
-    from agent_cost_bench.usage import compute_codex_cost
 
     pricing = Pricing(
         usd_per_input_token=0.0000011,

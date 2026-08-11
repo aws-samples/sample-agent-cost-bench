@@ -11,7 +11,7 @@ from agent_cost_bench.config import (
     load_cli_compare_config,
     load_model_compare_config,
 )
-from agent_cost_bench.models import CompareMode, CostSource, TaskMode
+from agent_cost_bench.models import CompareMode, CostSource
 
 
 def _write(p, text):
@@ -200,7 +200,6 @@ def test_comparison_label_default_and_legacy_fallback(tmp_path, monkeypatch):
 def test_cost_source_inferred_from_binary_name(tmp_path, monkeypatch):
     """cost_source is optional in YAML — inferred from cli_path basename."""
     from agent_cost_bench.targets import _infer_cost_source
-    from agent_cost_bench.models import Pricing
 
     # Binary name → expected cost_source
     cases = [
