@@ -8,7 +8,7 @@ import pytest
 
 from agent_cost_bench.executor import SpecDrivenExecutor, VibeExecutor
 from agent_cost_bench.executor.spec import SpecCapabilityError
-from agent_cost_bench.models import BenchConfig, CompareMode
+from agent_cost_bench.models import BenchConfig, CompareMode, CostSource
 from tests.conftest import mock_target
 
 
