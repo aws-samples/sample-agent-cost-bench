@@ -451,6 +451,57 @@ def test_codex_dispatch_via_parse_usage():
 
 
 # ---------------------------------------------------------------------------
+# codex_json: cache-write tokens must not be billed as fresh input
+# ---------------------------------------------------------------------------
+
+
+def test_codex_cache_write_billed_at_cache_write_rate():
+    """`cache_write_input_tokens` is a distinct slice of input_tokens and must be
+    priced separately. Billing it as fresh input overstates cost substantially
+    (observed ~20% on a real run, where cache writes were 702k of 703k
+    "uncached" tokens)."""
+    pricing = Pricing(
+        usd_per_input_token=0.000005,
+        usd_per_cached_input_token=0.0000005,
+        usd_per_cache_write_token=0.00000625,
+        usd_per_output_token=0.00003,
+    )
+    stdout = _codex_line(
+        input_tokens=100_000,
+        cached_input_tokens=90_000,
+        cache_write_input_tokens=9_500,
+        output_tokens=1_000,
+    )
+    u = parse_codex_usage(stdout, "", pricing)
+    assert u.cache_write_input_tokens == 9_500
+    # fresh = 100000 - 90000 - 9500 = 500
+    expected = (
+        500 * 0.000005
+        + 90_000 * 0.0000005
+        + 9_500 * 0.00000625
+        + 1_000 * 0.00003
+    )
+    assert abs(u.cost_usd - expected) < 1e-12
+
+
+def test_codex_cache_write_defaults_to_cached_rate_not_input_rate():
+    """With no explicit cache-write rate, cache writes fall back to the CACHED
+    rate (OpenAI charges no cache-write premium) — never the fresh-input rate."""
+    pricing = Pricing(
+        usd_per_input_token=0.000005,
+        usd_per_cached_input_token=0.0000005,
+        usd_per_output_token=0.00003,
+    )
+    cost = compute_codex_cost(
+        100_000, 90_000, 1_000, 0, pricing, cache_write_input_tokens=9_500
+    )
+    expected = (
+        500 * 0.000005 + 90_000 * 0.0000005 + 9_500 * 0.0000005 + 1_000 * 0.00003
+    )
+    assert abs(cost - expected) < 1e-12
+    # Sanity: the old (buggy) behaviour billed cache writes at the input rate.
+    buggy = 10_000 * 0.000005 + 90_000 * 0.0000005 + 1_000 * 0.00003
+    assert cost < buggy
 # devin_export cost source
 # ---------------------------------------------------------------------------
 

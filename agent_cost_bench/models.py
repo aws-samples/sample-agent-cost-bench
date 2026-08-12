@@ -207,6 +207,7 @@ class Usage:
     cost_usd: float | None = None
     input_tokens: int | None = None
     cached_input_tokens: int | None = None          # tokens served from cache (Codex)
+    cache_write_input_tokens: int | None = None     # tokens WRITTEN to cache this turn (Codex)
     output_tokens: int | None = None
     reasoning_output_tokens: int | None = None      # thinking/reasoning tokens (Codex o-series)
     seconds: float | None = None
