@@ -46,11 +46,23 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture()
 def app_client():
-    mod = importlib.import_module("main")
-    from starlette.testclient import TestClient
-    return TestClient(mod.app)
+    """Function-scoped fixture: reimports main module each time to reset state."""
+    # Remove cached module so global state (todos dict, next_id) resets
+    if "main" in sys.modules:
+        del sys.modules["main"]
+    # Change to workspace dir so FileResponse("index.html") resolves correctly
+    old_cwd = os.getcwd()
+    os.chdir(WS)
+    try:
+        mod = importlib.import_module("main")
+        from starlette.testclient import TestClient
+        yield TestClient(mod.app)
+    finally:
+        os.chdir(old_cwd)
+        if "main" in sys.modules:
+            del sys.modules["main"]
 
 
 @pytest.fixture(scope="module")
@@ -80,7 +92,9 @@ def test_index_html_exists():
 def test_list_initially_empty(app_client):
     r = app_client.get("/api/todos")
     assert r.status_code == 200
-    assert isinstance(r.json(), list)
+    data = r.json()
+    assert isinstance(data, list)
+    assert len(data) == 0, f"expected empty list, got {len(data)} items"
 
 
 def test_create_todo(app_client):
