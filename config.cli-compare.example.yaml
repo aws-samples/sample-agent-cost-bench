@@ -41,6 +41,7 @@
 #   copilot          → copilot_json
 #   codex            → codex_json
 #   cursor           → cursor_json
+#   opencode         → opencode_json
 #   devin            → devin_export
 # You can still set it explicitly if needed, but in most cases it's not required.
 
@@ -197,6 +198,33 @@ runners:
   #     - "--dangerously-bypass-approvals-and-sandbox"
   #     - "-m"
   #     - "{model}"
+  #     - "{prompt}"
+
+  # # ── OpenCode ──────────────────────────────────────────────────────────────
+  # # Cost is parsed from `opencode run --format json` JSONL `step_finish`
+  # # events (provider cost + tokens; summed across multi-step loops).
+  # # Use {workspace} with --dir so OpenCode runs in the harness workspace.
+  # # Non-repo workspaces are git-initialized automatically (OpenCode requires it).
+  # # Adjust model_id / pricing to match your OpenCode provider setup.
+  # - name: opencode
+  #   display_name: "OpenCode (gpt-5.6-sol)"
+  #   cli_path: opencode
+  #   model_id: azure/gpt-5.6-sol
+  #   pricing:
+  #     usd_per_input_token:        0.000002     # $2.00  / 1M
+  #     usd_per_cached_input_token: 0.0000005    # $0.50  / 1M
+  #     usd_per_output_token:       0.000008     # $8.00  / 1M
+  #   cli_base_args:
+  #     - "run"
+  #     - "--format"
+  #     - "json"
+  #     - "--dir"
+  #     - "{workspace}"
+  #     - "--model"
+  #     - "{model}"
+  #     - "--variant"
+  #     - "{effort}"
+  #     - "--auto"
   #     - "{prompt}"
 
 # Task discovery (cli-compare is vibe-only; spec tasks are skipped)

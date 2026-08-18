@@ -881,6 +881,83 @@ def parse_premium_request_usage(pricing: Pricing) -> Usage:
 
 
 # ---------------------------------------------------------------------------
+# OpenCode CLI JSON (`opencode run --format json`)
+# ---------------------------------------------------------------------------
+
+
+def parse_opencode_usage(stdout: str, stderr: str, pricing: Pricing) -> Usage:
+    """Parse ``opencode run --format json`` JSONL output.
+
+    OpenCode streams JSONL events to stdout. Token usage and cost live in
+    ``step_finish`` events (nested under ``part``):
+
+        {"type":"step_finish",...,"part":{...,"tokens":{"total":N,"input":N,
+            "output":N,"reasoning":N,"cache":{"write":N,"read":N}},"cost":0.02973}}
+
+    A task may produce multiple step_finish events (multi-step agent loops),
+    so we sum tokens and cost across ALL step_finish events.
+
+    The ``cost`` field in step_finish is direct USD (reported by the provider).
+    When present, it takes precedence over token-based calculation. If cost is
+    not available but tokens are, we fall back to computing cost from pricing
+    rates using the same formula as codex.
+    """
+    in_tok = out_tok = reasoning_tok = cached_read = cached_write = 0
+    total_cost = 0.0
+    saw_usage = False
+
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if obj.get("type") != "step_finish":
+            continue
+        part = obj.get("part")
+        if not isinstance(part, dict):
+            continue
+
+        # Direct cost (USD) from the provider
+        cost_val = part.get("cost")
+        if cost_val is not None:
+            total_cost += float(cost_val)
+
+        tokens = part.get("tokens")
+        if not isinstance(tokens, dict):
+            continue
+        saw_usage = True
+        in_tok += int(tokens.get("input") or 0)
+        out_tok += int(tokens.get("output") or 0)
+        reasoning_tok += int(tokens.get("reasoning") or 0)
+        cache = tokens.get("cache")
+        if isinstance(cache, dict):
+            cached_read += int(cache.get("read") or 0)
+            cached_write += int(cache.get("write") or 0)
+
+    if not saw_usage:
+        return Usage()
+
+    # Prefer the direct cost reported by opencode; fall back to token-based
+    # calculation if cost field was missing/zero but tokens were present.
+    cost_usd: float | None = None
+    if total_cost > 0:
+        cost_usd = total_cost
+    else:
+        cost_usd = compute_codex_cost(in_tok, cached_read, out_tok, reasoning_tok, pricing)
+
+    return Usage(
+        cost_usd=cost_usd,
+        input_tokens=in_tok or None,
+        cached_input_tokens=cached_read or None,
+        output_tokens=out_tok or None,
+        reasoning_output_tokens=reasoning_tok or None,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 
@@ -913,6 +990,8 @@ def parse_usage(
         return parse_copilot_usage(stdout, stderr, p, home=home)
     if src == CostSource.CODEX_JSON:
         return parse_codex_usage(stdout, stderr, p)
+    if src == CostSource.OPENCODE_JSON:
+        return parse_opencode_usage(stdout, stderr, p)
     if src == CostSource.CURSOR_JSON:
         return parse_cursor_usage(stdout, stderr, p)
     if src == CostSource.DEVIN_EXPORT:
