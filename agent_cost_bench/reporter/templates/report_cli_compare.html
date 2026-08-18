@@ -67,9 +67,9 @@
     <div class="chart-box"><h3>Avg Duration (s)</h3><canvas id="latChart"></canvas></div>
   </div>
   <h3 style="margin:28px 0 14px;">Per-Task Breakdown — each CLI on every task</h3>
-  <div class="chart-grid">
-    <div class="chart-box"><h3>Cost per Run by Task (USD)</h3><canvas id="costByTaskChart"></canvas></div>
-    <div class="chart-box"><h3>Duration by Task (s)</h3><canvas id="latByTaskChart"></canvas></div>
+  <div class="chart-grid-full">
+    <div class="chart-box"><h3>Cost per Run by Task (USD)</h3><div class="tall"><canvas id="costByTaskChart"></canvas></div></div>
+    <div class="chart-box"><h3>Duration by Task (s)</h3><div class="tall"><canvas id="latByTaskChart"></canvas></div></div>
   </div>
   {% endif %}
 
@@ -206,9 +206,10 @@ workspace: {{ r.workspace_path }}</pre>
       data: { labels: taskLabels, datasets },
       options: {
         responsive: true,
+        maintainAspectRatio: false,
         plugins: { legend: { display: true, labels: { color: tickColor } } },
         scales: {
-          x: { grid: { color: gridColor }, ticks: { color: tickColor } },
+          x: { grid: { color: gridColor }, ticks: { color: tickColor, autoSkip: false, maxRotation: 90, minRotation: 90 } },
           y: { grid: { color: gridColor }, ticks: { color: tickColor }, beginAtZero: true,
                title: { display: true, text: yLabel, color: tickColor } }
         }

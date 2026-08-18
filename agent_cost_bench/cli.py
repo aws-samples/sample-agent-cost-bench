@@ -286,6 +286,7 @@ def model_compare_list_tasks(config):
 def report(results_json, output_dir, no_open):
     """Generate an HTML report from a results or .partial.json file (mode auto-detected)."""
     import json as _json
+    from datetime import datetime
 
     from .models import (
         BenchConfig,
@@ -312,6 +313,15 @@ def report(results_json, output_dir, no_open):
     )
     run_obj = BenchmarkRun(run_id=data.get("run_id", "partial"), config=cfg)
     run_obj.finished_at = _utcnow()
+    # Prefer the recorded window over "now", so the header reports the run's own
+    # elapsed time rather than a duration measured from when the report was made.
+    for attr in ("started_at", "finished_at"):
+        raw = data.get(attr)
+        if isinstance(raw, str):
+            try:
+                setattr(run_obj, attr, datetime.fromisoformat(raw))
+            except ValueError:
+                pass
 
     for r in data.get("results", []):
         try:
@@ -334,6 +344,18 @@ def report(results_json, output_dir, no_open):
             tr.output_tokens = usage.get("output_tokens")
             tr.reasoning_output_tokens = usage.get("reasoning_output_tokens")
             tr.cli_reported_seconds = usage.get("cli_reported_seconds", 0.0) or 0.0
+            # Restore the timestamps that back the duration_seconds property.
+            # Without them every run reads as 0.0s, and the report silently falls
+            # back to that for any CLI which doesn't self-report a duration —
+            # Devin has cli_reported_seconds == 0, so its whole latency column
+            # rendered as "0.0s" as though the runs were instantaneous.
+            for attr, key in (("started_at", "started_at"), ("finished_at", "finished_at")):
+                raw = r.get(key)
+                if isinstance(raw, str):
+                    try:
+                        setattr(tr, attr, datetime.fromisoformat(raw))
+                    except ValueError:
+                        pass
             tr.raw_credits = usage.get("raw_credits")
             tr.premium_requests = usage.get("premium_requests")
             tr.total_credits = usage.get("total_credits", 0.0) or 0.0

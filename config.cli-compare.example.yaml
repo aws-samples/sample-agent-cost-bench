@@ -11,9 +11,26 @@
 #   cursor login  (or agent login)   # Cursor (stores token in macOS Keychain;
 #                                    #   CURSOR_API_KEY env var alone is NOT sufficient)
 #   codex auth login                 # Codex (or export OPENAI_API_KEY)
+#   devin auth login                 # Devin
 #
 # The harness inherits the parent shell's environment, so all CLIs pick up
 # their keys automatically — no per-runner `env:` block needed.
+#
+# One inherited variable does need attention, because it silently skews results
+# rather than failing: CLAUDE_CODE_USE_BEDROCK=1 (env var or
+# .claude/settings.local.json) routes Claude Code through Bedrock, which serves
+# a 200K context window where the first-party API and the other CLIs serve 1M.
+# A large-context task then dies with "Prompt is too long" after being billed in
+# full, and the harness records that as a score of 0.0 — reading as a model
+# weakness when it is a provider difference. Pin it per runner if any CLI in the
+# comparison is on a different provider:
+#
+#   env:
+#     CLAUDE_CODE_USE_BEDROCK: "0"        # 0, not unset: env vars can only be
+#     ANTHROPIC_MODEL: claude-opus-5      #   added to the inherited environment
+#
+# Confirm with --output-format json, which reports contextWindow and provider
+# per model, before trusting a cross-provider comparison.
 #
 # `comparison_label` is a reporting headline only — it names what this run
 # compares. Optional; defaults to "cross-CLI comparison".
@@ -25,9 +42,10 @@
 #   codex            → codex_json
 #   cursor           → cursor_json
 #   opencode         → opencode_json
+#   devin            → devin_export
 # You can still set it explicitly if needed, but in most cases it's not required.
 
-comparison_label: Opus 4.8 (Kiro / Claude Code / Copilot / Cursor)
+comparison_label: Opus 4.8 (Kiro / Claude Code / Copilot / Cursor / Devin)
 
 # LLM-as-judge for rubric tasks (optional — only needed if task_ids includes
 # rubric tasks like bedrock-sentiment that have quality.rubric).
@@ -102,6 +120,59 @@ runners:
       requires_pty: true
     cli_base_args: ["-p", "{prompt}", "--trust","--yolo", "--output-format", "json",
                     "--model", "{model}"]
+
+  # ── Devin (claude-opus-4.8) ───────────────────────────────────────────────
+  # Devin has no JSON output mode, but `--export <file>` writes an ATIF
+  # conversation export whose `final_metrics` block carries cumulative token
+  # counts. The export path is workspace-relative, so it lands inside the run's
+  # own workspace; `pricing.devin_export_file` must match the --export filename.
+  #
+  # Like Cursor, Devin encodes the effort level in the model slug rather than a
+  # separate flag, so the harness appends the task's effort to model_id
+  # ("claude-opus-4-8" + "high" → "claude-opus-4-8-high"). Run `devin models
+  # list` to see the slugs your account can use. Append "-fast" for the fast
+  # variants (billed at 2× the standard rate).
+  #
+  # Permissions: Devin's non-interactive mode silently rejects any tool call
+  # that needs approval, so the harness seeds each workspace with the scoped
+  # allow/deny policy in `tasks/devin/config.json` (see devin_permissions_file
+  # below) instead of using `--permission-mode dangerous`. That file allows
+  # workspace reads/writes plus an explicit list of build/test commands, and
+  # denies ~/.ssh, ~/.aws, credential files, sudo, ssh, git push, gh, and aws.
+  # It allows the shell, so that deny list is a speed bump rather than a
+  # boundary — containment is the disposable per-run workspace. See the header
+  # of tasks/devin/config.json for the full reasoning.
+  #
+  # Workspace trust: print mode cannot show the interactive trust prompt and
+  # aborts in an untrusted directory. Trust is inherited by child directories,
+  # so run `devin` once interactively in your `workspace_base` and approve it —
+  # every per-run workspace underneath is then trusted. Prefer that to passing
+  # `--respect-workspace-trust false`, which disables the check globally for the
+  # run; reach for the flag only where no one can approve interactively (CI).
+  #
+  # Pricing: from `devin models list` (standard, non-fast tiers)
+  # Opus 4.8: Input $5/M, Output $25/M — i.e. Devin passes the provider's list
+  # price through. The CLI publishes no cache-read rate (`devin models list
+  # --format json` exposes only cost_summary), so use the provider's published
+  # cache-read price: 10% of input, matching the Cursor block above for the same
+  # underlying model. Cache reads are typically ~90% of prompt tokens in an
+  # agentic run, so this rate — not the input rate — dominates reported cost;
+  # leaving it unset bills cache reads at full input price and overstates Devin
+  # by roughly 5x. total_prompt_tokens INCLUDES total_cached_tokens, so the
+  # harness backs the cached portion out before applying the fresh-input rate.
+  - name: devin
+    display_name: "Devin (claude-opus-4.8)"
+    cli_path: devin
+    model_id: claude-opus-4-8
+    pricing:
+      usd_per_input_token:        0.000005     # $5.00  / 1M (fresh input)
+      usd_per_cached_input_token: 0.0000005    # $0.50  / 1M (cache read, 10% of in)
+      usd_per_output_token:       0.000025     # $25.00 / 1M
+      devin_export_file: devin-usage.json      # must match --export below
+    cli_base_args: ["-p", "{prompt}", "--model", "{model}",
+                    "--export", "devin-usage.json"]
+    # Add "--respect-workspace-trust", "false" only if you cannot pre-trust
+    # workspace_base interactively (see the trust note above).
 
   # # ── OpenAI Codex (gpt-5.5) ────────────────────────────────────────────────
   # # Pricing reference: https://developers.openai.com/api/docs/pricing?latest-pricing=standard
@@ -181,8 +252,12 @@ functional_pass_threshold: 0.99
 # macOS, set workspace_base under your home directory (e.g. ~/agent-cost-bench-runs)
 # since Finch can only mount volumes from the home directory.
 workspace_base: /tmp/agent-cost-bench-cli-compare
+# Devin permission policy copied into every workspace as `.devin/config.json`.
+# Other CLIs ignore it. Set to "" to skip the copy (Devin then falls back to its
+# default Normal mode and rejects the tool calls a coding task needs).
+devin_permissions_file: tasks/devin/config.json
 
 # Reporting
 output_dir: results
-report_title: "Benchmark Analysis: Opus 4.8 (Kiro vs Claude Code vs Copilot vs Cursor)"
+report_title: "Benchmark Analysis: Opus 4.8 (Kiro vs Claude Code vs Copilot vs Cursor vs Devin)"
 open_report: true

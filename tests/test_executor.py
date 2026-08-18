@@ -48,6 +48,44 @@ def test_effort_substituted_in_command(tmp_path, vibe_task):
     assert "--effort=low" in cmd
 
 
+@pytest.mark.parametrize(
+    "cost_source", [CostSource.CURSOR_JSON, CostSource.DEVIN_EXPORT]
+)
+def test_effort_appended_to_model_slug(tmp_path, vibe_task, cost_source):
+    """Cursor and Devin select effort via a model-slug suffix, not a flag — the
+    harness appends the effort so every CLI in a comparison runs the same model
+    at the same reasoning level."""
+    t = mock_target()
+    t.cost_source = cost_source
+    t.model_id = "claude-opus-5"
+    t.cli_base_args = [t.cli_base_args[0], "--model={model}"]
+    cfg = _cfg([t], tmp_path)
+    cfg.effort = "high"
+    ws = tmp_path / "ws"
+    ws.mkdir(parents=True)
+    cmd = VibeExecutor(cfg, vibe_task, ws, t)._build_command("PROMPT")
+    assert "--model=claude-opus-5-high" in cmd
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    ["claude-opus-5-max", "claude-opus-5-thinking-max", "composer-2.5"],
+)
+def test_effort_not_appended_when_slug_already_final(tmp_path, vibe_task, model_id):
+    """A model_id that already carries an effort suffix — or a house model that
+    doesn't use the suffix pattern at all — is passed through verbatim."""
+    t = mock_target()
+    t.cost_source = CostSource.DEVIN_EXPORT
+    t.model_id = model_id
+    t.cli_base_args = [t.cli_base_args[0], "--model={model}"]
+    cfg = _cfg([t], tmp_path)
+    cfg.effort = "high"
+    ws = tmp_path / "ws"
+    ws.mkdir(parents=True)
+    cmd = VibeExecutor(cfg, vibe_task, ws, t)._build_command("PROMPT")
+    assert f"--model={model_id}" in cmd
+
+
 @pytest.mark.asyncio
 async def test_vibe_execution_yields_usage(tmp_path, vibe_task, monkeypatch):
     monkeypatch.setenv("MOCK_COST_MODE", "kiro")

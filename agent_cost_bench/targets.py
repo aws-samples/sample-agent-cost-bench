@@ -41,10 +41,12 @@ def _infer_cost_source(cli_path: str, pricing: dict[str, Any]) -> CostSource:
     2. Binary ends with ``claude``               → ``claude_json``
     3. Binary ends with ``copilot``              → ``copilot_json``
     4. Binary ends with ``codex``                → ``codex_json``
-    5. Pricing has ``usd_per_input_token``
+    5. Binary ends with ``cursor``/``cursor-agent`` → ``cursor_json``
+    6. Binary ends with ``devin``                → ``devin_export``
+    7. Pricing has ``usd_per_input_token``
        AND ``usd_per_output_token``              → ``tokens``
-    6. Pricing has ``usd_per_premium_request``   → ``premium_request``
-    7. Fallback                                  → ``none``
+    8. Pricing has ``usd_per_premium_request``   → ``premium_request``
+    9. Fallback                                  → ``none``
 
     An explicit ``cost_source`` in the YAML always takes precedence over
     inference — this function is only called when the field is absent.
@@ -65,6 +67,8 @@ def _infer_cost_source(cli_path: str, pricing: dict[str, Any]) -> CostSource:
         return CostSource.CURSOR_JSON
     if stem == "opencode":
         return CostSource.OPENCODE_JSON
+    if stem == "devin":
+        return CostSource.DEVIN_EXPORT
     # Generic per-token pricing (any CLI that reports token counts via regex).
     if pricing.get("usd_per_input_token") and pricing.get("usd_per_output_token"):
         return CostSource.TOKENS

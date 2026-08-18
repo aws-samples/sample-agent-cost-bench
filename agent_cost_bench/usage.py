@@ -11,6 +11,11 @@ requests) so the reports can always show them side by side.
   Code          total_cost_usd, duration_ms, and a usage{} token block. USD is
                 reported directly — no pricing table needed.
 
+  Devin     ──  the CLI prints no cost telemetry, but `devin -p --export <file>`
+                writes an ATIF conversation export whose `final_metrics` block
+                carries cumulative token counts. Read from the run's workspace
+                and priced with the per-token rates from the config.
+
   Copilot   ──  `copilot --output-format json` prints JSONL. The terminal
                 `result` event carries a sessionId; we read
                 ~/.copilot/session-state/<id>/events.jsonl and extract the
@@ -498,6 +503,7 @@ def compute_codex_cost(
     output_tokens: int,
     reasoning_output_tokens: int,  # informational only — already included in output_tokens
     pricing: Pricing,
+    cache_write_input_tokens: int = 0,
 ) -> float | None:
     """Compute Codex API cost using OpenAI's standard billing formula.
 
@@ -509,10 +515,20 @@ def compute_codex_cost(
 
     Formula::
 
-        uncached_input = input_tokens - cached_input_tokens
-        cost = uncached_input      × usd_per_input_token
-             + cached_input_tokens × usd_per_cached_input_token
-             + output_tokens       × usd_per_output_token
+        fresh_input = input_tokens - cached_input_tokens - cache_write_input_tokens
+        cost = fresh_input              × usd_per_input_token
+             + cached_input_tokens      × usd_per_cached_input_token
+             + cache_write_input_tokens × usd_per_cache_write_token
+             + output_tokens            × usd_per_output_token
+
+    ``cache_write_input_tokens`` is a **distinct slice** of ``input_tokens``:
+    tokens written into the prompt cache on this turn. It is reported separately
+    by ``codex exec --json`` and must not be billed at the full fresh-input
+    rate — in practice it dominates ``input_tokens - cached_input_tokens``
+    (observed: 702,443 of 703,051 tokens across a 21-task run), so treating it
+    as fresh input overstates cost by ~20%. OpenAI does not charge a premium for
+    cache writes, so when ``usd_per_cache_write_token`` is not configured we
+    fall back to the *cached* rate rather than the fresh-input rate.
 
     **Important**: ``reasoning_output_tokens`` is a **subset** of
     ``output_tokens`` (already included — not additive). The API bills all
@@ -539,11 +555,21 @@ def compute_codex_cost(
         else p_in
     )
 
-    uncached_input = max(0, input_tokens - cached_input_tokens)
+    # Cache writes are a distinct slice of input_tokens. OpenAI charges no
+    # premium for them, so default to the cached rate (NOT the fresh-input rate)
+    # when an explicit cache-write rate isn't configured.
+    p_cache_write = (
+        pricing.usd_per_cache_write_token
+        if pricing.usd_per_cache_write_token is not None
+        else p_cached
+    )
+
+    fresh_input = max(0, input_tokens - cached_input_tokens - cache_write_input_tokens)
     cost = (
-        uncached_input        * p_in
-        + cached_input_tokens * p_cached
-        + output_tokens       * p_out
+        fresh_input                  * p_in
+        + cached_input_tokens        * p_cached
+        + cache_write_input_tokens   * p_cache_write
+        + output_tokens              * p_out
         # reasoning_output_tokens intentionally omitted — subset of output_tokens
     )
     return cost
@@ -573,7 +599,7 @@ def parse_codex_usage(stdout: str, stderr: str, pricing: Pricing) -> Usage:
     Timing: Codex does not emit a wall-clock duration in the JSONL stream.
     ``seconds`` is left ``None``; the harness records wall-clock time separately.
     """
-    in_tok = out_tok = reasoning_tok = cached_tok = 0
+    in_tok = out_tok = reasoning_tok = cached_tok = cache_write_tok = 0
     saw_usage = False
 
     for line in (stdout or "").splitlines():
@@ -591,18 +617,23 @@ def parse_codex_usage(stdout: str, stderr: str, pricing: Pricing) -> Usage:
             saw_usage = True
             in_tok += int(usage.get("input_tokens") or 0)
             cached_tok += int(usage.get("cached_input_tokens") or 0)
+            cache_write_tok += int(usage.get("cache_write_input_tokens") or 0)
             out_tok += int(usage.get("output_tokens") or 0)
             reasoning_tok += int(usage.get("reasoning_output_tokens") or 0)
 
     if not saw_usage:
         return Usage()
 
-    cost = compute_codex_cost(in_tok, cached_tok, out_tok, reasoning_tok, pricing)
+    cost = compute_codex_cost(
+        in_tok, cached_tok, out_tok, reasoning_tok, pricing,
+        cache_write_input_tokens=cache_write_tok,
+    )
 
     return Usage(
         cost_usd=cost,
         input_tokens=in_tok or None,
         cached_input_tokens=cached_tok or None,
+        cache_write_input_tokens=cache_write_tok or None,
         output_tokens=out_tok or None,
         reasoning_output_tokens=reasoning_tok or None,
     )
@@ -710,6 +741,106 @@ def parse_cursor_usage(stdout: str, stderr: str, pricing: Pricing) -> Usage:
         cached_input_tokens=(cache_read or 0) + (cache_write or 0) if cache_read is not None or cache_write is not None else None,
         output_tokens=out_tok,
         seconds=seconds,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Devin CLI ATIF export (`devin -p --export <file>`)
+# ---------------------------------------------------------------------------
+
+
+def parse_devin_usage(pricing: Pricing, workspace: Path | None) -> Usage:
+    """Parse the Devin CLI's ATIF conversation export for token usage.
+
+    The Devin CLI has no ``--output-format json`` flag and prints only the
+    assistant's prose to stdout, so there is no cost telemetry to scrape from
+    the transcript. It does however write a machine-readable ATIF export when
+    invoked with ``--export <file>``, whose trailing ``final_metrics`` block
+    carries the cumulative token counts for the whole session::
+
+        {
+          "schema_version": "ATIF-v1.7",
+          "agent": {"name": "devin", "model_name": "Claude Opus 5", ...},
+          "steps": [...],
+          "final_metrics": {
+            "total_prompt_tokens": 19249,
+            "total_completion_tokens": 4,
+            "total_cached_tokens": 12262,
+            "total_steps": 9
+          }
+        }
+
+    The export is written relative to the CLI's cwd — the run's workspace — so
+    the file is read from ``workspace / pricing.devin_export_file``.
+
+    ``total_prompt_tokens`` is **inclusive** of ``total_cached_tokens`` (the
+    same convention as Codex's ``input_tokens``/``cached_input_tokens``), so the
+    uncached portion must be backed out before pricing::
+
+        uncached_input = total_prompt_tokens - total_cached_tokens
+        cost = uncached_input       × usd_per_input_token
+             + total_cached_tokens  × usd_per_cached_input_token
+             + total_completion_tokens × usd_per_output_token
+
+    When ``usd_per_cached_input_token`` is absent, cached tokens are billed at
+    the regular input rate (conservative fallback), matching the Codex and
+    Cursor parsers.
+
+    Devin bills the account in credits/ACUs rather than USD and reports neither
+    in the export, so cost is computed from the per-token rates in the config
+    (Devin publishes per-MTok rates via ``devin models list``). ``seconds`` is
+    left ``None`` — the export carries per-step timestamps but no authoritative
+    model-time total, so the harness's own wall-clock measurement is used.
+
+    Returns an empty ``Usage()`` when the export is missing or unreadable (e.g.
+    the CLI died before writing it), so a failed run reports "no cost data"
+    rather than a misleading zero.
+    """
+    if workspace is None:
+        return Usage()
+    path = Path(workspace) / pricing.devin_export_file
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return Usage()
+    try:
+        export = json.loads(raw)
+    except json.JSONDecodeError:
+        return Usage()
+    if not isinstance(export, dict):
+        return Usage()
+
+    metrics = export.get("final_metrics")
+    if not isinstance(metrics, dict):
+        return Usage()
+
+    prompt_tokens = _safe_int(metrics.get("total_prompt_tokens"))
+    completion_tokens = _safe_int(metrics.get("total_completion_tokens"))
+    cached_tokens = _safe_int(metrics.get("total_cached_tokens"))
+    if prompt_tokens is None and completion_tokens is None:
+        return Usage()
+
+    in_tok = prompt_tokens or 0
+    out_tok = completion_tokens or 0
+    cached = cached_tokens or 0
+
+    cost = None
+    p_in = pricing.usd_per_input_token
+    p_out = pricing.usd_per_output_token
+    if p_in is not None and p_out is not None:
+        p_cached = (
+            pricing.usd_per_cached_input_token
+            if pricing.usd_per_cached_input_token is not None
+            else p_in
+        )
+        uncached_input = max(0, in_tok - cached)
+        cost = uncached_input * p_in + cached * p_cached + out_tok * p_out
+
+    return Usage(
+        cost_usd=cost,
+        input_tokens=in_tok or None,
+        cached_input_tokens=cached or None,
+        output_tokens=out_tok or None,
     )
 
 
@@ -837,12 +968,17 @@ def parse_usage(
     stderr: str = "",
     home: Path | None = None,
     run_id: str | None = None,
+    workspace: Path | None = None,
 ) -> Usage:
     """Parse usage for a target according to its ``cost_source``.
 
     ``run_id`` is the per-turn correlation id used by the kas_proxy_metrics
     parser (passed through X-Kas-Run-Id by the shim, into the proxy's
     metrics.jsonl); ignored by other cost sources.
+
+    ``workspace`` is the run's workspace directory, used by the devin_export
+    parser to locate the ATIF export the CLI wrote there; ignored by other
+    cost sources.
     """
     src = target.cost_source
     p = target.pricing
@@ -858,6 +994,8 @@ def parse_usage(
         return parse_opencode_usage(stdout, stderr, p)
     if src == CostSource.CURSOR_JSON:
         return parse_cursor_usage(stdout, stderr, p)
+    if src == CostSource.DEVIN_EXPORT:
+        return parse_devin_usage(p, workspace)
     if src == CostSource.KAS_PROXY_METRICS:
         return parse_kas_proxy_metrics_usage(p, run_id)
     if src == CostSource.TOKENS:

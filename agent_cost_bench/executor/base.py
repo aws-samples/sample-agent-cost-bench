@@ -54,6 +54,21 @@ class CLITimeoutError(TimeoutError):
 # memory. Excess is dropped but the process is still drained so it never blocks.
 _MAX_CAPTURE = 5_000_000
 
+# CLIs that select the reasoning effort by suffixing the model slug instead of
+# taking a separate --effort flag (Cursor: "claude-opus-4-8-high", Devin:
+# "claude-opus-5-high"). See _build_command.
+_EFFORT_IN_MODEL_SLUG = (CostSource.CURSOR_JSON, CostSource.DEVIN_EXPORT)
+# Only provider models use the suffix pattern; a CLI's own house models
+# (e.g. Cursor's composer-2.5) take the slug verbatim.
+_EFFORT_SLUG_PREFIXES = ("claude-", "gpt-")
+_EFFORT_SLUG_SUFFIXES = (
+    "-low", "-medium", "-high", "-xhigh", "-max",
+    "-low-fast", "-medium-fast", "-high-fast", "-xhigh-fast", "-max-fast",
+    "-thinking-low", "-thinking-medium", "-thinking-xhigh", "-thinking-max",
+    "-thinking-low-fast", "-thinking-medium-fast",
+    "-thinking-xhigh-fast", "-thinking-max-fast",
+)
+
 
 async def _read_stream(stream: asyncio.StreamReader | None, buf: list[bytes]) -> None:
     """Drain a stream into ``buf`` (capped). Always reads to EOF so the child
@@ -190,25 +205,21 @@ class BaseExecutor:
         t = self.target
         # Per-task effort takes precedence over the run-level default.
         effort = getattr(self.task, "effort", None) or self.config.effort or "high"
-        # Cursor encodes effort as a suffix on the model slug (e.g.
-        # "claude-opus-4-8" + "-high" → "claude-opus-4-8-high") rather than a
-        # separate --effort flag.  When cost_source is cursor_json AND the
-        # configured model_id doesn't already contain the effort level, append
-        # it so the correct model is selected server-side.
+        # Cursor and Devin encode effort as a suffix on the model slug (e.g.
+        # "claude-opus-4-8" + "-high" → "claude-opus-4-8-high", and Devin's
+        # "claude-opus-5-high") rather than exposing a separate --effort flag.
+        # For those cost sources, when the configured model_id doesn't already
+        # carry an effort level, append it so the correct model is selected
+        # server-side — this is what keeps a cross-CLI comparison honest: every
+        # runner ends up on the same model at the same reasoning effort even
+        # though they spell it differently.
         # Only applies to provider models (claude-*, gpt-*) that support effort
         # variants — Cursor's own models (composer-2.5) don't use effort suffixes.
         model_id = t.model_id
-        if t.cost_source == CostSource.CURSOR_JSON and effort:
-            _CURSOR_EFFORT_PREFIXES = ("claude-", "gpt-")
-            _CURSOR_EFFORT_SUFFIXES = (
-                "-low", "-medium", "-high", "-xhigh", "-max",
-                "-low-fast", "-medium-fast", "-high-fast", "-xhigh-fast", "-max-fast",
-                "-thinking-low", "-thinking-medium", "-thinking-xhigh", "-thinking-max",
-                "-thinking-low-fast", "-thinking-medium-fast", "-thinking-xhigh-fast", "-thinking-max-fast",
-            )
+        if t.cost_source in _EFFORT_IN_MODEL_SLUG and effort:
             # Only append effort to provider models that use the suffix pattern.
-            if any(model_id.startswith(pfx) for pfx in _CURSOR_EFFORT_PREFIXES):
-                if not any(model_id.endswith(sfx) for sfx in _CURSOR_EFFORT_SUFFIXES):
+            if any(model_id.startswith(pfx) for pfx in _EFFORT_SLUG_PREFIXES):
+                if not any(model_id.endswith(sfx) for sfx in _EFFORT_SLUG_SUFFIXES):
                     model_id = f"{model_id}-{effort}"
 
         cmd: list[str] = [t.cli_path]
@@ -393,7 +404,10 @@ class BaseExecutor:
                     stdout=stdout, stderr="",
                 )
             if self._logger:
-                usage = parse_usage(self.target, stdout, stderr, run_id=run_id)
+                usage = parse_usage(
+                    self.target, stdout, stderr,
+                    run_id=run_id, workspace=self.workspace,
+                )
                 await self._logger.log_call(
                     task_id=self.task.id, target=self.target.label, phase=phase,
                     command=cmd, prompt=prompt, stdout=stdout, stderr=stderr,
@@ -478,7 +492,10 @@ class BaseExecutor:
                 )
 
             if self._logger:
-                usage = parse_usage(self.target, stdout, stderr, run_id=run_id)
+                usage = parse_usage(
+                    self.target, stdout, stderr,
+                    run_id=run_id, workspace=self.workspace,
+                )
                 await self._logger.log_call(
                     task_id=self.task.id,
                     target=self.target.label,
@@ -562,7 +579,9 @@ class BaseExecutor:
                 prompt=prompt, agent=agent, timeout_seconds=timeout_seconds, phase=phase,
                 extra_args=extra_args, stdin_text=stdin_text, use_pty=use_pty,
             )
-            usage: Usage = parse_usage(self.target, stdout, stderr, run_id=run_id)
+            usage: Usage = parse_usage(
+                self.target, stdout, stderr, run_id=run_id, workspace=self.workspace,
+            )
             phase_result = PhaseResult(
                 phase=phase,
                 success=exit_code == 0,

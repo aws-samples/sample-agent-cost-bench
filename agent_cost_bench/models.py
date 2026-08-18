@@ -101,6 +101,7 @@ class CostSource(str, Enum):
     CODEX_JSON = "codex_json"            # parse `codex exec --json` JSONL turn.completed events
     CURSOR_JSON = "cursor_json"          # parse `cursor -p --output-format json` result event
     OPENCODE_JSON = "opencode_json"      # parse `opencode run --format json` step_finish events
+    DEVIN_EXPORT = "devin_export"        # parse `devin -p --export <file>` ATIF final_metrics
     TOKENS = "tokens"                    # parse token counts via regex, price per-token
     PREMIUM_REQUEST = "premium_request"  # fixed N premium/credit requests per run × price
     KAS_PROXY_METRICS = "kas_proxy_metrics"  # read kas-proxy's metrics.jsonl, correlated by run_id
@@ -121,6 +122,8 @@ class Pricing(BaseModel):
       - claude_json       -> (none; CLI reports total_cost_usd directly)
       - copilot_json      -> usd_per_premium_request (fallback) and/or token rates
       - codex_json        -> usd_per_input_token + usd_per_output_token + usd_per_reasoning_token
+      - devin_export      -> usd_per_input_token + usd_per_cached_input_token
+                             + usd_per_output_token
       - tokens            -> usd_per_input_token + usd_per_output_token
       - premium_request   -> usd_per_premium_request
       - kas_proxy_metrics -> kas_metrics_file + kas_metrics_timeout_seconds
@@ -135,7 +138,8 @@ class Pricing(BaseModel):
     usd_per_cached_input_token: float | None = Field(
         default=None,
         description=(
-            "USD per cached input token read from cache (codex_json / cursor_json). "
+            "USD per cached input token read from cache "
+            "(codex_json / cursor_json / devin_export). "
             "When None, cached tokens are billed at the regular input rate. "
             "For Codex o4-mini (standard): $0.275/1M = $0.000000275/token."
         ),
@@ -165,6 +169,18 @@ class Pricing(BaseModel):
     requests_per_run: float = Field(
         default=1.0, description="Premium requests counted per run for premium_request"
     )
+    # ---- devin_export cost source ----
+    devin_export_file: str = Field(
+        default="devin-usage.json",
+        description=(
+            "Workspace-relative filename the Devin CLI writes its ATIF "
+            "conversation export to (via --export). The parser reads this file "
+            "from the run's workspace and takes token counts from the export's "
+            "`final_metrics` block. Must match the --export path in the "
+            "runner's cli_base_args."
+        ),
+    )
+
     # ---- kas_proxy_metrics cost source ----
     kas_metrics_file: str | None = Field(
         default=None,
@@ -192,6 +208,7 @@ class Usage:
     cost_usd: float | None = None
     input_tokens: int | None = None
     cached_input_tokens: int | None = None          # tokens served from cache (Codex)
+    cache_write_input_tokens: int | None = None     # tokens WRITTEN to cache this turn (Codex)
     output_tokens: int | None = None
     reasoning_output_tokens: int | None = None      # thinking/reasoning tokens (Codex o-series)
     seconds: float | None = None
@@ -614,6 +631,16 @@ class BenchConfig(BaseModel):
     functional_pass_threshold: float = Field(default=0.99, ge=0.0, le=1.0)
     pass_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     workspace_base: str = Field(default="/tmp/agent_cost_bench")
+    # Devin CLI permission policy copied into every workspace as
+    # `<workspace>/.devin/config.json`. Devin's non-interactive mode silently
+    # rejects any tool call that would need approval, so a scoped allow/deny
+    # policy is how the benchmark grants it the file writes and build commands a
+    # coding task needs without resorting to a blanket auto-approve flag. Other
+    # CLIs ignore the directory; set to "" to skip the copy entirely.
+    devin_permissions_file: str = Field(
+        default="tasks/devin/config.json",
+        description="Path to the Devin permission policy seeded into each workspace",
+    )
 
     # ---- Reporting ----
     output_dir: str = Field(default="results")
@@ -770,15 +797,30 @@ class PhaseResult:
 
     @property
     def transient_error(self) -> bool:
+        combined = f"{self.stdout}\n{self.stderr}".lower()
+
+        # Some CLIs report a failed turn in their JSON stream but still exit 0
+        # (observed: Codex emits {"type":"turn.failed"} after an upstream
+        # "internal server error" and exits cleanly). Those runs produce no
+        # usage telemetry, so without this check they were scored as a normal
+        # PASS/FAIL with null cost — silently understating that CLI's spend and
+        # comparing unequal task sets. Detect them regardless of exit code.
+        hard_failures = (
+            '"type":"turn.failed"',
+            '"type": "turn.failed"',
+        )
+        if any(s in combined for s in hard_failures):
+            return True
+
         if self.success:
             return False
-        combined = f"{self.stdout}\n{self.stderr}".lower()
         signatures = (
             "having trouble responding",
             "failed to receive the next message",
             "failed to send the request",
             "dispatch failure",
             "error sending request for url",
+            "internal server error",
             "tool approval required but --no-interactive",
         )
         return any(s in combined for s in signatures)
