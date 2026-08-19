@@ -1,0 +1,14 @@
+# Keep the image lean
+.git
+.venv
+__pycache__
+*.pyc
+*.egg-info
+results/
+.pytest_cache
+.DS_Store
+kiro-nomics/
+*.yaml
+!config.cli-compare.example.yaml
+!config.model-compare.example.yaml
+!agent_cost_bench/config.cli-compare.example.yaml

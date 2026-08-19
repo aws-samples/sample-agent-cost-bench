@@ -38,8 +38,71 @@ Cost is always reported two ways: USD and native units (credits / AI Credits / t
 
 ## Install
 
+### Option A: Open in GitHub Codespaces (zero install)
+
+The fastest way to try the framework. Click the button below to get a pre-configured cloud environment with all CLIs installed — just bring your API keys:
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/aws-samples/sample-agent-cost-bench)
+
+Once the Codespace boots (~2 minutes):
+1. Your API keys are injected automatically if you configured them as [Codespaces secrets](https://github.com/settings/codespaces) (`KIRO_API_KEY`, `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`)
+2. The framework and Docker verification images are pre-installed
+3. Run `./quickstart.sh` to start your first benchmark
+
+> **Tip:** Add secrets before launching the Codespace: GitHub → Settings → Codespaces → Secrets. The devcontainer prompts for them on first launch if not set.
+
+### Option B: Docker (run anywhere, bring your API keys)
+
+Pull the pre-built image from ECR Public and run with your keys:
+
 ```bash
-git clone <repo link>
+docker run -it --privileged \
+  -e KIRO_API_KEY=your-kiro-key \
+  -e ANTHROPIC_API_KEY=your-anthropic-key \
+  -e GITHUB_TOKEN=your-github-token \
+  public.ecr.aws/s8y1a6d4/agent-cost-bench:latest
+```
+
+On first run (~30 seconds), the container installs the latest CLI versions, starts Docker, and prints a status dashboard. Then:
+
+```bash
+./setup.sh           # Detect CLIs, pick a model, generate config
+./quickstart.sh      # Run a 2-task benchmark
+```
+
+> **Note:** `--privileged` is required for Docker-in-Docker (verification tasks that run tests in containers). If you only need the non-Docker tasks (rest-api, dashboard, terraform-s3, etc.), you can omit it.
+
+### Option C: Automated local setup (recommended for repeated use)
+
+The setup script detects your CLIs, picks a model, and generates a ready-to-run config:
+
+```bash
+git clone https://github.com/aws-samples/sample-agent-cost-bench.git
+cd sample-agent-cost-bench
+./setup.sh
+```
+
+The script will:
+1. Check Python 3.10+ and create a virtual environment
+2. Install the `agent-cost-bench` command
+3. Detect which coding CLIs are on your PATH (kiro-cli, claude, copilot, agent, devin)
+4. Ask which model to use (Opus 4.8, Sonnet 4.6, or Sonnet 5)
+5. Generate `config.generated.yaml` with runners for all detected CLIs
+6. Optionally build Docker verification images
+7. Validate the setup
+
+Then run a quick 2-task benchmark to confirm everything works:
+
+```bash
+./quickstart.sh
+```
+
+This runs `rest-api` and `terraform-s3` across your detected CLIs (~$0.30–1.20 total), generates an HTML report, and opens it.
+
+### Option D: Manual setup
+
+```bash
+git clone https://github.com/aws-samples/sample-agent-cost-bench.git
 cd sample-agent-cost-bench
 pip install -e .            # installs the `agent-cost-bench` command
 pip install -e ".[dev]"     # optional: dev/test extras
@@ -390,3 +453,7 @@ pytest    # unit + integration; uses a MockCLI, no network or real CLI needed
 - **Spec runs hang** — native spec mode needs a TTY. The harness uses PTY by default (`spec_use_pty: true`). If your CLI reads from stdin, set `spec_prompt_via_stdin: true`.
 - **Docker task fails** — run `agent-cost-bench <mode> validate <config>` to check images; build missing ones with `./tasks/docker/build-images.sh`.
 - **Offline restore fails** — allow network for verification: `AGENT_COST_BENCH_VERIFY_NETWORK=bridge agent-cost-bench <mode> run <config>`.
+
+## Workshop
+
+A step-by-step hands-on workshop is available in [`workshop/`](./workshop/README.md) with 7 modules covering setup, first run, full comparisons, model comparisons, Docker tasks, custom tasks, and interpreting results. Estimated total time: ~2.5 hours.
