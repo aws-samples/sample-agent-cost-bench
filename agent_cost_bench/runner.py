@@ -353,7 +353,7 @@ class BenchmarkRunner:
                 return result
 
             # Evaluate
-            await self._evaluate(result, task, workspace.path)
+            await self._evaluate(result, task, workspace.path, target)
 
             fr = result.functional_result
             if fr and fr.checkpoints.get("harness_error"):
@@ -470,13 +470,22 @@ class BenchmarkRunner:
             else TaskStatus.FAILED
         )
 
-    async def _evaluate(self, result: RunResult, task: TaskConfig, workspace_path: Path) -> None:
+    async def _evaluate(
+        self, result: RunResult, task: TaskConfig, workspace_path: Path,
+        target: Target | None = None,
+    ) -> None:
         weights = task.scoring
         evaluated: set[str] = set()
 
+        # The arm's own env has to reach verification. A task may require the agent
+        # to read a variable (gateway-inference mandates ACB_RESOURCE_PREFIX, and the
+        # deliveries derive their state-file name from it), in which case a verifier
+        # that does not set it cannot start the code the agent shipped. That is a
+        # scorer failure recorded as an agent failure, so pass it through.
         func_result = await FunctionalEvaluator(
             task, workspace_path, logger=self._logger,
             config=self.config, model_label=result.target,
+            target_env=dict(target.env) if target is not None else None,
         ).evaluate()
         result.functional_result = func_result
         result.functional_score = func_result.score

@@ -30,6 +30,12 @@ from pathlib import Path
 
 from ..models import FunctionalTestResult, TaskConfig
 
+
+def _run_label(workspace) -> str:
+    """The per-run workspace directory name, which encodes arm and repeat."""
+    return Path(workspace).name
+
+
 # Markers the verify script may print (current + legacy from both harnesses).
 _RESULT_MARKERS = ("AGENT_COST_BENCH_RESULT:", "KIRO_BENCH_RESULT:", "CLI_BENCH_RESULT:")
 _RESULT_RE = re.compile(
@@ -57,12 +63,21 @@ _STANDARD_ENV = {
 class FunctionalEvaluator:
     """Runs the task's verification and returns a FunctionalTestResult."""
 
-    def __init__(self, task: TaskConfig, workspace_path: Path, logger=None, config=None, model_label: str = ""):
+    def __init__(self, task: TaskConfig, workspace_path: Path, logger=None, config=None,
+                 model_label: str = "", target_env: dict[str, str] | None = None):
         self.task = task
         self.workspace = workspace_path
         self._logger = logger
         self._config = config
         self._model_label = model_label
+        # The env the agent itself ran with. A task that requires the agent to honour
+        # a variable must verify with the same variable set, or the verifier cannot
+        # start what the agent built. Credentials-shaped keys are excluded: the point
+        # is task configuration, not handing the scorer the arm's own auth.
+        self._target_env = {
+            k: v for k, v in (target_env or {}).items()
+            if not re.search(r"TOKEN|SECRET|KEY|PASSWORD|CREDENTIAL", k, re.I)
+        }
 
     async def evaluate(self) -> FunctionalTestResult:
         # Declarative verification takes priority when configured. Dispatch by
@@ -73,7 +88,8 @@ class FunctionalEvaluator:
                 from .script_runner import ScriptVerifyRunner
 
                 return await ScriptVerifyRunner(
-                    self.task, self.workspace, logger=self._logger
+                    self.task, self.workspace, logger=self._logger,
+                    target_env=self._target_env,
                 ).run()
             if self.task.verify.runner == "pytest":
                 from .pytest_runner import PytestSuiteRunner
@@ -144,6 +160,7 @@ class FunctionalEvaluator:
 
             env = os.environ.copy()
             env.update(_STANDARD_ENV)
+            env.update(self._target_env)
             env["WORKSPACE"] = str(self.workspace)
             # Note: we deliberately do NOT set DOCKER_HOST here. Docker resolves
             # its active context from ~/.docker/config.json (file-based, not the
@@ -195,7 +212,7 @@ class FunctionalEvaluator:
 
             if self._logger:
                 await self._logger.log_call(
-                    task_id=self.task.id,
+                    task_id=self.task.id, run_label=_run_label(self.workspace),
                     target="verify",
                     phase="verify",
                     command=cmd,
