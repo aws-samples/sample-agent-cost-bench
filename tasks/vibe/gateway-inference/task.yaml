@@ -1,0 +1,113 @@
+id: gateway-inference
+description: >
+  Long job on a real repository: add an AgentCore Gateway inference target so a coding
+  agent running on AgentCore Runtime can reach a model through the Gateway, end to end.
+  The agent has to work out the endpoint, the region and the auth itself.
+
+# Clone the semi-autonomous coding-agents workshop repository and
+# add Gateway inference-target support, then prove the whole path works — coding agent on
+# AgentCore Runtime -> Gateway -> inference target -> back.
+#
+# Why this task and not a synthetic one:
+#   * it needs a working understanding of the Bedrock API and of how AgentCore behaves
+#   * it needs the AWS documentation MCP server, which is given to BOTH sides identically
+#   * the agent has to discover for itself that the request goes to the Mantle
+#     OpenAI-compatible endpoint; nothing here names it
+#
+# The arithmetic in verify/score.py is NOT a model-quality measurement. It is functional
+# verification that the gateway is wired correctly: questions with exact known answers,
+# routed through the deployed gateway. What is actually being measured is whether the
+# agent can understand a real product API — a proxy for the ISV customer scenario. The
+# model behind the gateway is pinned in the delivered configuration so it is not a free
+# variable.
+#
+# Agent memory was considered and left out: it cannot be scored deterministically.
+#
+# Three operational hazards, all handled outside the agent:
+#   1. Infra failure must not read as model failure. verify/score.py separates AWS-side
+#      errors (throttling, quota, IAM propagation, expired credentials) from wrong
+#      answers and marks the run infra_suspected rather than scoring it 0.
+#   2. The harness runs arms concurrently (concurrency: per_target) and the repo ships a
+#      hardcoded GATEWAY_NAME, so three arms would find and delete each other's gateway.
+#      The prompt therefore requires per-deployment unique names, and the scorer checks
+#      that the delivered code actually derives them rather than hardcoding one.
+#   2b. The served model is named in the prompt on purpose. An earlier version said only
+#      "pin a model", and the deliveries pinned different ones — one arm served
+#      mistral-large-3 while the others served gpt-oss-120b — so the live comparison was
+#      not like-for-like. The model behind the gateway has to be pinned
+#      precisely to remove it as a variable.
+#   3. Teardown is never the agent's job — a failed agent is exactly the case that leaves
+#      resources behind. bench-cfg/sweep-agentcore.sh lists what exists after a run and
+#      deletes only ids passed to it explicitly. It used to delete by name prefix; the
+#      agents named their resources themselves, the prefix matched nothing, and seven
+#      gateways billed for five hours before anyone looked. Always list the account after
+#      a run rather than trusting a "clean" report.
+#   3b. The prompt now tells the agent NOT to run its own teardown, because the first
+#      version said "provide teardown" and one arm read that as "and run it". Verification
+#      happens after the agent stops, so an arm that cleaned up properly had no deployment
+#      left to answer the probes and scored zero, while an arm that left three billable
+#      gateways running scored full marks. The scorer was rewarding the more expensive
+#      behaviour. It now also records deployment_state_present so this cannot hide again.
+repo:
+  url: https://github.com/aws-samples/sample-amazon-bedrock-agentcore-coding-agents.git
+  # Pinned to a full commit SHA so every run gets identical code no matter when it runs.
+  ref: 7a01d67710ebe30372def8efd197d5bdf0205111
+
+mode: vibe
+effort: high
+
+# 15-20 minutes of agent runtime with retries allowed. 45 gives the live
+# control-plane calls room to settle without the harness killing a working run.
+timeout_minutes: 45
+
+# 0.60: this task can partially succeed in ways worth crediting — the target can be
+# created correctly while the end-to-end call is still failing on propagation delay.
+functional_pass_threshold: 0.60
+
+verify:
+  runner: local
+  score: verify/score.py
+  deps: ["boto3==1.40.29", "openai==1.109.1", "aws-bedrock-token-generator==1.1.0"]
+
+prompt: |
+  You are in a clone of an existing AWS sample repository. Work in it.
+
+  This project deploys a coding agent onto Amazon Bedrock AgentCore, and it already
+  deploys an AgentCore Gateway with an MCP target. Add support for an **inference**
+  target on that Gateway, so that an agent running on AgentCore Runtime can call a model
+  by going through the Gateway rather than calling the model service directly.
+
+  It has to work end to end: deploy the gateway with the inference target, and be able to
+  send a question through the Gateway from the Runtime side and get the answer back.
+
+  Follow the conventions this project already uses for deploying and tearing down
+  AgentCore resources, and keep the existing MCP target working.
+
+  Three things that matter for how this gets run:
+
+  - **Name every resource you create with the prefix in the `ACB_RESOURCE_PREFIX`
+    environment variable**, then whatever suffix you like to keep it unique. Several
+    deployments run at the same time in the same account, so a fixed name collides with
+    another deployment and deletes its resources, and a name without that prefix cannot be
+    cleaned up afterwards.
+  - **Pin the served model to `openai.gpt-oss-120b`.** Not selectable, not a default that
+    can be overridden: the same deployment has to answer the same question the same way
+    every time, and the comparison this feeds needs the model held constant.
+  - **Write teardown for everything you create, but do not run it.** Leave your
+    deployment standing when you finish, and leave any state or config file your
+    deploy step wrote in place — it will be checked after you stop, and a torn-down
+    deployment has nothing left to check. Cleanup is handled separately.
+
+  It will be checked by sending arithmetic questions with exact known answers through the
+  deployed gateway, so do not stub or mock the call, and do not hardcode answers. Make it
+  possible to ask a question from a single command, and say in your README exactly what
+  that command is, which directory to run it from, and which environment variables it
+  needs.
+
+  AWS credentials are already configured in this environment, so you do not need to obtain
+  or manage them. What you do need to work out yourself: which endpoint serves the models
+  serves that model, the correct region, and how the request has to be signed or
+  authorised. Use this repository and the AWS documentation tools available in
+  this session.
+
+  Everything else is yours to work out.

@@ -1,0 +1,52 @@
+# gateway-inference — a task that deploys live, billable AWS infrastructure.
+#
+# Unlike every other task in this suite, this one is not graded by tests over files. The
+# agent has to deploy an Amazon Bedrock AgentCore Gateway with an inference target, and the
+# scorer then sends arithmetic with known answers through whatever the agent built. Prose
+# cannot pass it and the expected answers appear nowhere in the task.
+#
+# READ BEFORE RUNNING
+#   * This creates real gateways, IAM roles and possibly Lambdas. They bill until deleted.
+#   * Run bench-cfg/sweep-agentcore.sh afterwards, then list the account yourself. The
+#     sweeper only sees resources whose names carry the prefix you gave the agent, and an
+#     agent that fails is exactly the one that leaves things behind.
+#   * Give each arm its own ACB_RESOURCE_PREFIX. Arms run concurrently and the sample repo
+#     ships a fixed gateway name, so without distinct prefixes they delete each other's work.
+#   * The scorer needs that same variable, which is why the runner passes each target's env
+#     through to verification. Without it the delivered code cannot find its own deployment
+#     state and a working delivery scores zero.
+#
+# Replace the two cli_path/model_id blocks with the CLIs you are comparing.
+
+runners:
+  - name: agent-a
+    display_name: "Agent A"
+    cli_path: your-cli
+    model_id: your-model
+    env:
+      ACB_RESOURCE_PREFIX: "acb-a-"
+    cli_base_args: [chat, --no-interactive, "--model={model}", "--effort={effort}"]
+
+  - name: agent-b
+    display_name: "Agent B"
+    cli_path: your-other-cli
+    model_id: your-other-model
+    env:
+      ACB_RESOURCE_PREFIX: "acb-b-"
+    cli_base_args: ["-p", "{prompt}", "--output-format", "json",
+                    "--model", "{model}", "--effort", "{effort}"]
+
+tasks_dir: tasks
+task_ids:
+  - gateway-inference
+modes: ["vibe"]
+
+concurrency: per_target
+timeout_minutes: 50
+repeats: 3
+functional_pass_threshold: 0.60
+workspace_base: /tmp/gateway-inference-runs
+
+output_dir: results
+report_title: "gateway-inference: live AWS deployment"
+open_report: false

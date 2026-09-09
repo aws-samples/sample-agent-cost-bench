@@ -76,10 +76,12 @@ class RunLogger:
         phase: str = "vibe",
         credits: float | None = None,
         cost_usd: float | None = None,
+        run_label: str = "",
     ) -> None:
         block = self._format_block(
             task_id=task_id,
             target=target,
+            run_label=run_label,
             phase=phase,
             command=command,
             prompt=prompt,
@@ -119,6 +121,7 @@ class RunLogger:
         *,
         task_id: str,
         target: str,
+        run_label: str,
         phase: str,
         command: list[str],
         prompt: str,
@@ -146,9 +149,14 @@ class RunLogger:
             cmd_parts[-1] = "<prompt — see PROMPT section below>"
         cmd_display = " ".join(cmd_parts)
 
+        # The run label carries the repeat number. Without it the header cannot tell
+        # repeat 1 from repeat 3 of the same arm, and attributing a block to a run
+        # means matching float durations against the results JSON — which is how a
+        # per-run audit of this log previously went wrong.
         lines: list[str] = [
             "\n" + "═" * _WIDE,
-            f"[{now}]  {task_id}  |  target: {target}  |  phase: {phase}",
+            f"[{now}]  {task_id}  |  target: {target}  |  phase: {phase}"
+            + (f"  |  run: {run_label}" if run_label else ""),
             "─" * _WIDE,
             "COMMAND",
             f"  {cmd_display}",

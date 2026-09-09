@@ -25,11 +25,18 @@ from ..models import FunctionalTestResult, TaskConfig
 from .functional import _STANDARD_ENV, build_marker_result
 
 
+def _run_label(workspace) -> str:
+    """The per-run workspace directory name, which encodes arm and repeat."""
+    return Path(workspace).name
+
+
 class ScriptVerifyRunner:
-    def __init__(self, task: TaskConfig, workspace: Path, logger=None):
+    def __init__(self, task: TaskConfig, workspace: Path, logger=None,
+                 target_env: dict[str, str] | None = None):
         self.task = task
         self.workspace = Path(workspace)
         self._logger = logger
+        self._target_env = dict(target_env or {})
 
     async def run(self) -> FunctionalTestResult:
         spec = self.task.verify
@@ -49,6 +56,12 @@ class ScriptVerifyRunner:
 
         env = os.environ.copy()
         env.update(_STANDARD_ENV)
+        # The arm's own env has to reach the scorer. gateway-inference requires the
+        # agent to name every resource from ACB_RESOURCE_PREFIX, and the deliveries
+        # derive their deployment state-file name from it — so a scorer without that
+        # variable looks for `.deployed-state..json`, never finds the state the agent
+        # wrote, and records "no runnable entrypoint" for working code.
+        env.update(self._target_env)
         env["WORKSPACE"] = str(self.workspace)
         env["TASK_DIR"] = str(self.task.task_dir)
         # Put the venv's bin first on PATH so console scripts (uvicorn, pytest,
@@ -103,7 +116,7 @@ class ScriptVerifyRunner:
 
             if self._logger:
                 await self._logger.log_call(
-                    task_id=self.task.id, target="verify", phase="verify",
+                    task_id=self.task.id, run_label=_run_label(self.workspace), target="verify", phase="verify",
                     command=cmd, prompt=f"WORKSPACE={self.workspace}",
                     stdout=stdout, stderr=stderr, exit_code=exit_code, duration_seconds=duration,
                 )
