@@ -157,7 +157,9 @@ class PytestSuiteRunner:
         return result
 
     async def _ensure_venv(self) -> str | None:
-        venv_dir = self.workspace / ".agent_cost_bench_venv"
+        # Resolve to absolute so subprocess commands (which run with cwd=workspace)
+        # don't double-nest a relative path.
+        venv_dir = (self.workspace / ".agent_cost_bench_venv").resolve()
         py = venv_dir / "bin" / "python"
         marker = venv_dir / ".ready"
         if marker.exists() and py.exists():
@@ -211,10 +213,13 @@ class PytestSuiteRunner:
     def _build_env(self, cfg: dict) -> dict[str, str]:
         env = os.environ.copy()
         env.update(_STANDARD_ENV)
-        env["WORKSPACE"] = str(self.workspace)
+        # Resolve to absolute so the test subprocess (whose cwd is already the
+        # workspace) doesn't double-nest a relative WORKSPACE path.
+        ws_abs = str(self.workspace.resolve())
+        env["WORKSPACE"] = ws_abs
         # Allow test files to `import main` (or any model module) without path
         # manipulation — the workspace is prepended to PYTHONPATH.
-        env["PYTHONPATH"] = str(self.workspace) + os.pathsep + env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = ws_abs + os.pathsep + env.get("PYTHONPATH", "")
         # Expose the task directory so test files can locate fixture data (seed
         # files, sample logs, etc.) via TASK_DIR.
         if self.task.task_dir is not None:

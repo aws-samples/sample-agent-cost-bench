@@ -100,6 +100,7 @@ class CostSource(str, Enum):
     COPILOT_JSON = "copilot_json"        # parse `copilot --output-format json` JSONL + session-state AIU
     CODEX_JSON = "codex_json"            # parse `codex exec --json` JSONL turn.completed events
     CURSOR_JSON = "cursor_json"          # parse `cursor -p --output-format json` result event
+    OPENCODE_JSON = "opencode_json"      # parse `opencode run --format json` step_finish events
     ANTIGRAVITY_JSON = "antigravity_json"  # parse `agy -p --output-format json` result object
     DEVIN_EXPORT = "devin_export"        # parse `devin -p --export <file>` ATIF final_metrics
     PI_JSON = "pi_json"                  # parse `pi -p --mode json` JSONL turn_end usage/cost

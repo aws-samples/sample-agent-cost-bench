@@ -241,7 +241,7 @@ class BaseExecutor:
         for arg in t.cli_base_args:
             rendered = arg.format(
                 model=model_id, prompt=prompt, agent=agent or "",
-                effort=effort, workspace=workspace,
+                effort=effort, workspace=str(self.workspace),
             )
             if "{prompt}" in arg:
                 prompt_used = True

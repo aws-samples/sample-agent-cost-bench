@@ -69,6 +69,8 @@ def _infer_cost_source(cli_path: str, pricing: dict[str, Any]) -> CostSource:
         return CostSource.CURSOR_JSON
     if stem in ("agy", "antigravity"):
         return CostSource.ANTIGRAVITY_JSON
+    if stem == "opencode":
+        return CostSource.OPENCODE_JSON
     if stem == "devin":
         return CostSource.DEVIN_EXPORT
     if stem == "pi":
