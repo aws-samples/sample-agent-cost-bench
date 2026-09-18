@@ -14,7 +14,7 @@ Bring any model, any CLI, and any use case — a real GitHub repo with your own 
 
 The framework is designed to be flexible:
 
-- **Any CLI** — Kiro, Claude Code, GitHub Copilot, Cursor, OpenAI Codex, Antigravity, Devin, pi - Currently supported CLI's.
+- **Any CLI** — Kiro, Claude Code, GitHub Copilot, Cursor, OpenAI Codex, Antigravity, OpenCode, Devin, pi - Currently supported CLI's.
 - **Any model** — Anthropic (Claude), OpenAI (o-series, GPT-5.x) or anything your CLI exposes.
 - **Any use case** — greenfield tasks included out of the box, or bring your own GitHub repo (public or private). The framework clones it, hands it to the model, and verifies the result.
 - **Multiple verification options** — pytest, Docker containers, custom scorers, or LLM-judge rubrics. Pick the one that fits; no verification code is required for rubric-graded tasks.
@@ -25,7 +25,7 @@ Cost is always reported two ways: USD and native units (credits / AI Credits / t
 
 - **Python 3.10+**
 - **The coding CLI(s) you want to benchmark**, installed and logged in:
-  - `cli-compare`: the CLIs you list as runners (e.g. `kiro-cli`, `claude`, `copilot`, `agent`, `codex`, `agy`, `devin`, `pi`)
+  - `cli-compare`: the CLIs you list as runners (e.g. `kiro-cli`, `claude`, `copilot`, `agent`, `codex`, `agy`, `opencode`, `devin`, `pi`)
   - `model-compare`: the Kiro CLI
 - **Docker** — only if you run the multi-language tasks (C#/.NET, Java,
   TypeScript, Terraform, Helm). Build images once with `./tasks/docker/build-images.sh`.
@@ -137,6 +137,8 @@ export GITHUB_TOKEN=...          # Copilot (or use `copilot auth login`)
 export CURSOR_API_KEY=...        # Cursor (or use `cursor login`)
 export OPENAI_API_KEY=...        # Codex (or use `codex auth login`)
 # Antigravity: use `agy login`
+# OpenCode: use `opencode auth login` (or the provider's own env var, e.g.
+#     GITHUB_TOKEN for github-copilot, ANTHROPIC_API_KEY / OPENAI_API_KEY)
 # Devin: use `devin auth login` (no env-var equivalent)
 # pi: reads its provider's own credentials (e.g. AWS credentials for
 #     amazon-bedrock, ANTHROPIC_API_KEY / OPENAI_API_KEY for those providers).
@@ -159,6 +161,7 @@ Pricing rates are volatile and change over time. Check each vendor's current pri
 | **Cursor** | Token-level rates (see below) | [cursor.com/docs/models-and-pricing](https://cursor.com/docs/models-and-pricing) |
 | **OpenAI Codex** | Token-level rates (see below) | [platform.openai.com/docs/pricing](https://platform.openai.com/docs/pricing) |
 | **Antigravity** | Token-level rates (see below) | Verify the per-token rates for your chosen `agy` model |
+| **OpenCode** | Provider cost read directly from the JSON output; token-level rates optional as a fallback (see below) | Rates depend on the provider you configure in OpenCode |
 | **Devin** | Token-level rates (see below) | `devin models list` prints per-MTok rates per model slug |
 | **pi** | No pricing config needed — prices each turn from its bundled model catalog and reports USD | `pi --list-models` shows the catalog; token rates may be supplied as a fallback for unpriced models |
 
@@ -197,7 +200,7 @@ The harness automatically detects how to read cost from each CLI based on its bi
 agent-cost-bench cli-compare run config.cli-compare.yaml
 ```
 
-The example config defines runners for Kiro, Claude Code, Copilot, Cursor, Antigravity, and Devin. Cost is auto-detected from the binary name — you provide the CLI path, model ID, and pricing rates:
+The example config defines runners for Kiro, Claude Code, Copilot, Cursor, Antigravity, OpenCode, and Devin. Cost is auto-detected from the binary name — you provide the CLI path, model ID, and pricing rates:
 
 ```yaml
 runners:
@@ -348,6 +351,40 @@ Notes on the flags:
 - **`--no-session`** — keeps each benchmark run stateless instead of appending to `~/.pi` session storage.
 - **`--no-approve`** — ignores project-local `pi` config, extensions, and skills found in the workspace. Worth keeping for a brownfield task that clones a repo you do not control: without it, files in the cloned tree could influence the run.
 - **`-p` implies non-interactive**, and built-in `read`/`write`/`edit`/`bash` tools are enabled without an approval prompt in this mode, so no "dangerously skip permissions" equivalent is needed. `pi` writes into the process working directory, so files land in the run workspace with no `--add-dir` equivalent required.
+
+#### OpenCode specifics
+
+OpenCode is a bring-your-own-provider CLI: you point it at whatever provider you have configured (GitHub Copilot, Anthropic, OpenAI, …) and it reports the provider's own cost. `opencode run --format json` streams JSONL events, and the harness reads token counts and cost from every `step_finish` event:
+
+```json
+{"type":"step_finish","part":{"tokens":{"total":N,"input":N,"output":N,
+  "reasoning":N,"cache":{"write":N,"read":N}},"cost":0.02973}}
+```
+
+A single task usually produces several `step_finish` events (one per step of the agent loop), so the harness sums both tokens and cost across all of them. The `cost` field is the provider's direct USD figure and takes precedence; if it is missing or zero but tokens are present, the harness falls back to computing cost from the per-token `pricing` block. That makes the pricing block **optional** — supply it only as a fallback, and match the rates to the provider behind your `model_id`.
+
+```yaml
+- name: opencode
+  display_name: "OpenCode (Gemini 3.8 Flash)"
+  cli_path: opencode
+  model_id: github-copilot/gemini-3.8-flash
+  pricing:
+    usd_per_input_token:        0.00000075   # $0.75  / 1M
+    usd_per_cached_input_token: 0.000000135  # $0.135 / 1M
+    usd_per_output_token:       0.00000375   # $3.75  / 1M
+  cli_base_args: ["run", "--format", "json",
+                  "--dir", "{workspace}", "--model", "{model}",
+                  "--variant", "{effort}", "--auto", "{prompt}"]
+```
+
+Notes on the flags:
+
+- **`--dir {workspace}`** — OpenCode does not use the process working directory; pass the run workspace explicitly so generated files land where the verifier looks. The harness substitutes `{workspace}` with the run's absolute workspace path.
+- **OpenCode requires a git repository.** It refuses to operate in a non-git directory, so the harness auto-runs `git init` in any non-repo workspace before the CLI starts (a no-op for repo tasks, which already have `.git` from the clone). Nothing to configure.
+- **`--model`** takes a `provider/model` slug (e.g. `github-copilot/gemini-3.8-flash`). Run `opencode models` to list the exact ids your configured provider exposes, and make sure `opencode auth login` (or the provider's env var) is set for that provider.
+- **`--variant {effort}`** — OpenCode takes reasoning effort as a separate flag (provider-specific values such as `high`, `max`, `minimal`), so the harness passes the task's `effort` straight through. No model-slug suffix games as with Cursor/Devin/Antigravity.
+- **`--auto`** runs non-interactively and auto-approves any tool call that is not explicitly denied, so no separate "skip permissions" flag is needed.
+- **Cost accuracy** depends on the provider reporting a `cost` in its `step_finish` events. When it does, the pricing block is ignored; when it does not, the fallback rates you supply are used, so keep them current and update them whenever you change `model_id`.
 
 ### model-compare — same CLI, different models
 
