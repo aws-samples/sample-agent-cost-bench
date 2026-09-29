@@ -133,8 +133,74 @@ def parse_kiro_credits_time(stdout: str, stderr: str = "") -> tuple[float | None
     return None, None
 
 
+def parse_kiro_stream_json_credits(stdout: str) -> float | None:
+    """Return total credits from the Kiro v3 ``--output-format stream-json``
+    event stream, or ``None`` when no credit telemetry is present.
+
+    Newer Kiro CLIs (v3) no longer print the ``▸ Credits: N • Time: Ns``
+    banner that ``parse_kiro_credits_time`` scrapes. Instead they emit JSON-Lines
+    on stdout; each user prompt produces one ``session_info_update`` event of
+    ``kind: "turn_completion"`` carrying::
+
+        {"type":"sessionUpdate","data":{"update":{
+            "sessionUpdate":"session_info_update",
+            "_meta":{"kiro":{
+                "promptTurnSummaries":[{"unit":"credit","usage":1.1099}],
+                "elapsedTime":10862,
+                "kind":"turn_completion"}}}}}
+
+    The turn's ``usage`` already aggregates the credits of every internal model
+    call for that prompt (one ``turn_completion`` may list several ``requestIds``).
+    We sum across ``turn_completion`` events defensively in case a single
+    invocation ever produces more than one.
+
+    NOTE: we deliberately do NOT return ``elapsedTime`` as a latency. It is
+    per-turn model time (and does not reliably total the run duration), so
+    surfacing it would override the harness's true wall-clock measurement and
+    make Kiro look far faster than it was. Latency comes from wall-clock instead.
+    """
+    credits_total = 0.0
+    saw_credit = False
+    for obj in _find_json_objects(stdout):
+        if obj.get("type") != "sessionUpdate":
+            continue
+        update = (obj.get("data") or {}).get("update") or {}
+        if update.get("sessionUpdate") != "session_info_update":
+            continue
+        kiro = (update.get("_meta") or {}).get("kiro") or {}
+        if kiro.get("kind") != "turn_completion":
+            continue
+        for summary in kiro.get("promptTurnSummaries") or []:
+            if not isinstance(summary, dict):
+                continue
+            if summary.get("unit") == "credit" and isinstance(
+                summary.get("usage"), (int, float)
+            ):
+                credits_total += float(summary["usage"])
+                saw_credit = True
+    return credits_total if saw_credit else None
+
+
 def parse_kiro_usage(stdout: str, stderr: str, pricing: Pricing) -> Usage:
-    credits, time_s = parse_kiro_credits_time(stdout, stderr)
+    # Two output shapes, detected in this order:
+    #
+    #  v3 (--output-format stream-json): credits arrive in turn_completion
+    #     events. We take credits from there and DELIBERATELY leave seconds
+    #     unset — the stream's per-turn `elapsedTime` is not a run total, and
+    #     the loose credit/time text in the stream would otherwise be
+    #     mis-scraped as a tiny bogus latency. The harness then uses wall-clock.
+    #
+    #  v2 (older CLI): the "▸ Credits: N • Time: Ns" banner. Its Time is a
+    #     trustworthy run total, so we keep it.
+    #
+    # Stream-json is checked FIRST: when turn_completion events are present the
+    # v2 banner scraper's fallback field-scan can spuriously match credit/time
+    # substrings elsewhere in the JSON stream, so it must not run for v3 output.
+    sj_credits = parse_kiro_stream_json_credits(stdout)
+    if sj_credits is not None:
+        credits, time_s = sj_credits, None
+    else:
+        credits, time_s = parse_kiro_credits_time(stdout, stderr)
     cost = None
     if credits is not None and pricing.usd_per_credit is not None:
         cost = credits * pricing.usd_per_credit

@@ -49,6 +49,69 @@ def test_kiro_ignores_model_generated_text_prefers_telemetry_banner():
     assert u.seconds == 63.0
 
 
+def _kiro_v3_turn(credits: float, elapsed_ms: int) -> str:
+    """One Kiro v3 stream-json turn_completion event as a JSONL line."""
+    return json.dumps({
+        "type": "sessionUpdate",
+        "data": {"update": {
+            "sessionUpdate": "session_info_update",
+            "_meta": {"kiro": {
+                "promptTurnSummaries": [
+                    {"unit": "credit", "unitPlural": "credits", "usage": credits}
+                ],
+                "elapsedTime": elapsed_ms,
+                "kind": "turn_completion",
+            }},
+        }},
+    })
+
+
+def test_kiro_v3_stream_json_credits():
+    # kiro-cli 2.23.0 (v3) emits no banner; credits arrive in a turn_completion
+    # event's promptTurnSummaries. Cost falls back to the stream-json path.
+    stdout = (
+        '{"type":"runStarted"}\n'
+        + _kiro_v3_turn(1.10991, 10862)
+        + '\n{"type":"runFinished","data":{"status":"success"}}\n'
+    )
+    u = parse_kiro_usage(stdout, "", Pricing(usd_per_credit=0.04))
+    assert abs(u.raw_credits - 1.10991) < 1e-9
+    assert abs(u.cost_usd - 1.10991 * 0.04) < 1e-9
+    # elapsedTime is per-turn model time, NOT run latency — must not be reported
+    # as seconds (the harness uses wall-clock instead).
+    assert u.seconds is None
+
+
+def test_kiro_v3_stream_json_sums_multiple_turns():
+    # Defensive: if a run ever emits more than one turn_completion, sum credits.
+    stdout = _kiro_v3_turn(1.0, 5000) + "\n" + _kiro_v3_turn(0.5, 3000) + "\n"
+    u = parse_kiro_usage(stdout, "", Pricing(usd_per_credit=0.04))
+    assert abs(u.raw_credits - 1.5) < 1e-9
+    assert u.seconds is None
+
+
+def test_kiro_stream_json_wins_and_suppresses_bogus_time():
+    # v3 stream-json output contains credit/time SUBSTRINGS that the v2 banner
+    # field-scan would otherwise mis-scrape as a tiny bogus latency (the per-turn
+    # elapsedTime, not a run total). When turn_completion events are present the
+    # stream-json path must win for credits AND force seconds=None so the harness
+    # falls back to wall-clock. This is the regression that made Kiro look ~2s.
+    stdout = (
+        "Credits: 0.5\n"          # stray substrings the loose scan would catch
+        "elapsed 16.693 s\n"
+        + _kiro_v3_turn(24.384, 16693) + "\n"
+    )
+    u = parse_kiro_usage(stdout, "", Pricing(usd_per_credit=0.04))
+    assert abs(u.raw_credits - 24.384) < 1e-9      # from turn_completion, not "0.5"
+    assert u.seconds is None                        # bogus 16.693s suppressed
+
+
+def test_kiro_no_telemetry_returns_none():
+    u = parse_kiro_usage("Hi", "", Pricing(usd_per_credit=0.04))
+    assert u.raw_credits is None
+    assert u.cost_usd is None
+
+
 def test_claude_json_total_cost_usd():
     obj = {
         "type": "result",

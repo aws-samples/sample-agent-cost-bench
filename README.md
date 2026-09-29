@@ -192,6 +192,8 @@ pricing:
 
 The harness automatically detects how to read cost from each CLI based on its binary name
 
+> **Kiro cost reporting requires `--output-format stream-json`.** On current kiro-cli (v3 default engine; observed on 2.23.0), a run still executes and is scored in plain-text mode, but credit/cost telemetry is only emitted in the stream-json event stream, so cost is reported as `null` without it. The bundled Kiro runner sets this flag. Older CLI versions printed a plain-text `▸ Credits:` banner. The cost parser is backward compatible: it reads credits from the stream-json event stream when present and otherwise falls back to the legacy `▸ Credits:` banner, so both current and older kiro-cli versions are handled automatically.
+
 ### cli-compare — same tasks, different CLIs
 
 *"How much does Sonnet 4.6 cost through Kiro vs Claude Code vs Copilot? How does Opus 4.8 compare across all four CLIs plus Cursor?"*
