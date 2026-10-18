@@ -18,11 +18,15 @@ from typing import Any
 
 from .models import CostSource, Pricing, Target, TargetCapabilities
 
+# Kiro CLIs from 2.32 print no "Credits:" banner in text mode (v2 or v3
+# engine). Credit telemetry only appears in the stream-json event stream
+# (metadata.meteringUsage on v2, turn_completion on v3), so it is always on.
+_KIRO_OUTPUT_ARGS = ["--output-format", "stream-json"]
 # Standard Kiro CLI chat invocation templates (model-compare default).
-_KIRO_BASE_ARGS = ["chat", "--no-interactive", "--trust-all-tools"]
+_KIRO_BASE_ARGS = ["chat", "--no-interactive", "--trust-all-tools", *_KIRO_OUTPUT_ARGS]
 # When using kiro-cli-plus, the wrapper already invokes `kiro-cli chat --v3`, so
 # we must NOT include `chat` again in the base args — only flags.
-_KIRO_PLUS_BASE_ARGS = ["--no-interactive", "--trust-all-tools"]
+_KIRO_PLUS_BASE_ARGS = ["--no-interactive", "--trust-all-tools", *_KIRO_OUTPUT_ARGS]
 _KIRO_MODEL_FLAG = "--model={model}"
 _KIRO_AGENT_FLAG = "--agent={agent}"
 _KIRO_EFFORT_FLAG = "--effort={effort}"

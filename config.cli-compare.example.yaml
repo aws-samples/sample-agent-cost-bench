@@ -13,7 +13,7 @@
 #   codex auth login                 # Codex (or export OPENAI_API_KEY)
 #   agy login                        # Antigravity
 #   devin auth login                 # Devin
-#   qodercli login                   # Qoder
+#   qoder login                      # Qoder
 #   pi auth check --provider <name> --json
 #                                    # pi (uses the PROVIDER's own credentials —
 #                                    #   AWS creds for amazon-bedrock, etc.;
@@ -51,10 +51,10 @@
 #   opencode         → opencode_json
 #   devin            → devin_export
 #   pi               → pi_json
-#   qodercli / qodercli-wake / qoder → qoder_json
+#   qoder / qodercli / qodercli-wake → qoder_json
 # You can still set it explicitly if needed, but in most cases it's not required.
 
-comparison_label: Opus 4.8 (Kiro / Claude Code / Copilot / Cursor / Devin ) vs Gemini 3.8 Flash in Antigravity)
+comparison_label: "Opus 4.8 (Kiro / Claude Code / Copilot / Cursor / Devin) vs Gemini 3.8 Flash (Antigravity) vs Sonnet 5 (pi) vs Qoder (auto)"
 
 # LLM-as-judge for rubric tasks (optional — only needed if task_ids includes
 # rubric tasks like bedrock-sentiment that have quality.rubric).
@@ -299,7 +299,7 @@ runners:
                     "--no-session", "--no-approve", "{prompt}"]
 
   # ── Qoder CLI (auto tier) ─────────────────────────────────────────────────
-  # `qodercli -p "<prompt>" -o json` prints a single Claude-Code-shaped result
+  # `qoder -p "<prompt>" -o json` prints a single Claude-Code-shaped result
   # object with the run totals at its top level:
   #
   #   {"type":"result","duration_ms":12622,"total_cost_usd":0,
@@ -308,12 +308,17 @@ runners:
   #      "cache_read_input_tokens":0,"cache_creation_input_tokens":0}, ...}
   #
   # Qoder bills in credits and reports total_cost_usd as 0, so cost is
-  # computed as total_credits × usd_per_credit (defaults to $0.02 when the
-  # pricing block is omitted). Native credits are kept alongside in the report.
+  # computed as total_credits × usd_per_credit. usd_per_credit is required for
+  # a dollar figure: without it cost is reported as unknown (credits are still
+  # recorded). $0.02 below is an example rate; check your Qoder plan.
+  #
+  # cli_path: `qoder` is the binary name from Qoder's docs. Point it at your
+  # own install or a wrapper script if yours differs; `qodercli` and
+  # `qodercli-wake` are also detected as Qoder automatically.
   #
   # Flags (from https://docs.qoder.com/cli/cli-reference):
   #   -m / --model   tier or model id: auto, efficient, performance, ultimate,
-  #                  or a frontier model from `qodercli --list-models`.
+  #                  or a frontier model from `qoder --list-models`.
   #   --yolo         same as --permission-mode bypass_permissions; auto-approves
   #                  tool calls so the coding task isn't blocked in print mode.
   #   --no-session-persistence  keeps each benchmark run stateless.
@@ -323,10 +328,10 @@ runners:
   #                  model that supports it.
   - name: qoder
     display_name: "Qoder (auto)"
-    cli_path: qodercli-wake
+    cli_path: qoder
     model_id: auto
     pricing:
-      usd_per_credit: 0.02
+      usd_per_credit: 0.02          # example rate; verify against your plan
     cli_base_args: ["-p", "{prompt}", "-o", "json",
                     "--model", "{model}", "--yolo",
                     "--no-session-persistence"]
@@ -445,5 +450,5 @@ devin_permissions_file: tasks/devin/config.json
 
 # Reporting
 output_dir: results
-report_title: "Benchmark Analysis: Opus 4.8 (Kiro vs Claude Code vs Copilot vs Cursor vs Devin)"
+report_title: "Benchmark Analysis: Kiro vs Claude Code vs Copilot vs Cursor vs Antigravity vs Devin vs pi vs Qoder"
 open_report: true

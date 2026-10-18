@@ -143,7 +143,7 @@ export OPENAI_API_KEY=...        # Codex (or use `codex auth login`)
 # pi: reads its provider's own credentials (e.g. AWS credentials for
 #     amazon-bedrock, ANTHROPIC_API_KEY / OPENAI_API_KEY for those providers).
 #     Verify with: pi auth check --provider <name> --json
-# Qoder: use `qodercli login`
+# Qoder: use `qoder login`
 ```
 
 The harness inherits the parent shell's environment, so all CLIs pick up their keys automatically — no per-runner `env:` block needed.
@@ -165,7 +165,7 @@ Pricing rates are volatile and change over time. Check each vendor's current pri
 | **OpenCode** | Provider cost read directly from the JSON output; token-level rates optional as a fallback (see below) | Rates depend on the provider you configure in OpenCode |
 | **Devin** | Token-level rates (see below) | `devin models list` prints per-MTok rates per model slug |
 | **pi** | No pricing config needed — prices each turn from its bundled model catalog and reports USD | `pi --list-models` shows the catalog; token rates may be supplied as a fallback for unpriced models |
-| **Qoder** | `usd_per_credit: 0.02` (the default when omitted) — cost is `total_credits` × rate from the `-o json` result | Qoder reports `total_cost_usd: 0`, so cost is derived from credits; check your plan's credit value |
+| **Qoder** | `usd_per_credit` (e.g. `0.02`) — cost is `total_credits` × rate from the `-o json` result; unknown if the rate is omitted | Qoder reports `total_cost_usd: 0`, so cost is derived from credits; check your plan's credit value |
 
 #### Token-level pricing (Cursor, Codex, and Devin)
 
@@ -204,7 +204,7 @@ The harness automatically detects how to read cost from each CLI based on its bi
 agent-cost-bench cli-compare run config.cli-compare.yaml
 ```
 
-The example config defines runners for Kiro, Claude Code, Copilot, Cursor, Antigravity, OpenCode, and Devin. Cost is auto-detected from the binary name — you provide the CLI path, model ID, and pricing rates:
+The example config defines runners for Kiro, Claude Code, Copilot, Cursor, Antigravity, OpenCode, Devin, pi, and Qoder. Cost is auto-detected from the binary name — you provide the CLI path, model ID, and pricing rates:
 
 ```yaml
 runners:

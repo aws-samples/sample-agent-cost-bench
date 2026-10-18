@@ -1226,10 +1226,6 @@ def parse_pi_usage(stdout: str, stderr: str, pricing: Pricing) -> Usage:
 # Qoder CLI JSON (`qodercli -p "..." -o json`)
 # ---------------------------------------------------------------------------
 
-# USD value of one Qoder credit, used when the runner sets no usd_per_credit.
-QODER_DEFAULT_USD_PER_CREDIT = 0.02
-
-
 def parse_qoder_usage(stdout: str, stderr: str, pricing: Pricing) -> Usage:
     """Parse the Qoder CLI's ``-p -o json`` result object.
 
@@ -1252,11 +1248,12 @@ def parse_qoder_usage(stdout: str, stderr: str, pricing: Pricing) -> Usage:
 
         cost = total_credits × usd_per_credit
 
-    ``usd_per_credit`` comes from the runner's ``pricing`` block and defaults to
-    :data:`QODER_DEFAULT_USD_PER_CREDIT` ($0.02) when unset. Native credits are
-    kept in ``raw_credits``. ``total_cost_usd`` is used only when the output
-    carries no ``total_credits``. The per-model ``modelUsage`` breakdown is not
-    read: the top-level fields are already the run totals.
+    ``usd_per_credit`` comes from the runner's ``pricing`` block. When it is
+    unset, cost is unknown (``None``), the same as Kiro; the reported
+    ``total_cost_usd: 0`` is not used because it would read as "free". Native
+    credits are always kept in ``raw_credits``. ``total_cost_usd`` is used only
+    when the output carries no ``total_credits``. The per-model ``modelUsage``
+    breakdown is not read: the top-level fields are already the run totals.
 
     Token semantics follow Claude Code: ``input_tokens`` is the fresh slice, so
     total input = ``input_tokens + cache_read_input_tokens +
@@ -1277,12 +1274,9 @@ def parse_qoder_usage(stdout: str, stderr: str, pricing: Pricing) -> Usage:
     total_credits = result_obj.get("total_credits")
     credits = float(total_credits) if isinstance(total_credits, (int, float)) else None
     if credits is not None:
-        rate = (
-            pricing.usd_per_credit
-            if pricing.usd_per_credit is not None
-            else QODER_DEFAULT_USD_PER_CREDIT
+        cost_usd = (
+            credits * pricing.usd_per_credit if pricing.usd_per_credit is not None else None
         )
-        cost_usd = credits * rate
     else:
         total_cost = result_obj.get("total_cost_usd")
         cost_usd = float(total_cost) if isinstance(total_cost, (int, float)) else None

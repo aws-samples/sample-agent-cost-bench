@@ -134,7 +134,7 @@ class Pricing(BaseModel):
       - pi_json           -> (none; the CLI reports a USD cost per turn from its
                              own model catalog. Optional token rates are used
                              only as a fallback when that cost is absent.)
-      - qoder_json        -> usd_per_credit (optional; defaults to $0.02/credit)
+      - qoder_json        -> usd_per_credit
       - tokens            -> usd_per_input_token + usd_per_output_token
       - premium_request   -> usd_per_premium_request
       - kas_proxy_metrics -> kas_metrics_file + kas_metrics_timeout_seconds

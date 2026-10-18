@@ -1143,10 +1143,10 @@ def _qoder_result(cost_usd=0, credits=0.6097447714285714, inp=0, out=0,
     })
 
 
-def test_qoder_sample_output_uses_default_credit_rate():
-    """The real sample: total_cost_usd 0, credits populated, no pricing set →
-    cost = credits × $0.02."""
-    u = parse_qoder_usage(_qoder_result(), "", Pricing())
+def test_qoder_sample_output_prices_credits():
+    """The real sample: total_cost_usd 0, credits populated →
+    cost = credits × usd_per_credit."""
+    u = parse_qoder_usage(_qoder_result(), "", Pricing(usd_per_credit=0.02))
     assert abs(u.cost_usd - 0.6097447714285714 * 0.02) < 1e-12
     assert abs(u.raw_credits - 0.6097447714285714) < 1e-12
     assert u.seconds == 12.622
@@ -1155,9 +1155,12 @@ def test_qoder_sample_output_uses_default_credit_rate():
     assert u.output_tokens is None
 
 
-def test_qoder_configured_credit_rate_wins_over_default():
-    u = parse_qoder_usage(_qoder_result(credits=10.0), "", Pricing(usd_per_credit=0.05))
-    assert abs(u.cost_usd - 0.5) < 1e-12
+def test_qoder_no_credit_rate_means_unknown_cost():
+    """Without usd_per_credit the cost is unknown, not the reported $0 and not a
+    guessed rate. Credits are still recorded."""
+    u = parse_qoder_usage(_qoder_result(credits=10.0), "", Pricing())
+    assert u.cost_usd is None
+    assert abs(u.raw_credits - 10.0) < 1e-12
 
 
 def test_qoder_credits_take_precedence_over_total_cost_usd():
