@@ -86,6 +86,9 @@ def test_model_compare_config_gets_kiro_defaults(tmp_path, monkeypatch):
     assert all(t.cost_source == CostSource.KIRO_CREDITS for t in cfg.targets)
     assert all(t.capabilities.supports_spec for t in cfg.targets)
     assert cfg.targets[0].pricing.usd_per_credit == 0.04
+    # Credit telemetry only appears in stream-json output on kiro-cli 2.32+.
+    args = cfg.targets[0].cli_base_args
+    assert args[args.index("--output-format") + 1] == "stream-json"
     # model-compare runs both vibe and spec tasks.
     ids = {t.id for t in discover_tasks(cfg)}
     assert ids == {"t-vibe", "t-spec"}
@@ -336,6 +339,9 @@ def test_cost_source_inferred_from_binary_name(tmp_path, monkeypatch):
         # pi reports USD itself; optional token rates must not demote it to TOKENS
         ("pi",            {"usd_per_input_token": 0.000002,
                            "usd_per_output_token": 0.00001},    CostSource.PI_JSON),
+        ("qodercli",      {},                                   CostSource.QODER_JSON),
+        ("qodercli-wake", {},                                   CostSource.QODER_JSON),
+        ("/usr/local/bin/qoder", {},                            CostSource.QODER_JSON),
         # a longer name merely ENDING in "pi" is not the pi CLI
         ("copi",          {},                                   CostSource.NONE),
         ("my-cli",        {"usd_per_input_token": 0.000001,

@@ -18,11 +18,15 @@ from typing import Any
 
 from .models import CostSource, Pricing, Target, TargetCapabilities
 
+# Kiro CLIs from 2.32 print no "Credits:" banner in text mode (v2 or v3
+# engine). Credit telemetry only appears in the stream-json event stream
+# (metadata.meteringUsage on v2, turn_completion on v3), so it is always on.
+_KIRO_OUTPUT_ARGS = ["--output-format", "stream-json"]
 # Standard Kiro CLI chat invocation templates (model-compare default).
-_KIRO_BASE_ARGS = ["chat", "--no-interactive", "--trust-all-tools"]
+_KIRO_BASE_ARGS = ["chat", "--no-interactive", "--trust-all-tools", *_KIRO_OUTPUT_ARGS]
 # When using kiro-cli-plus, the wrapper already invokes `kiro-cli chat --v3`, so
 # we must NOT include `chat` again in the base args — only flags.
-_KIRO_PLUS_BASE_ARGS = ["--no-interactive", "--trust-all-tools"]
+_KIRO_PLUS_BASE_ARGS = ["--no-interactive", "--trust-all-tools", *_KIRO_OUTPUT_ARGS]
 _KIRO_MODEL_FLAG = "--model={model}"
 _KIRO_AGENT_FLAG = "--agent={agent}"
 _KIRO_EFFORT_FLAG = "--effort={effort}"
@@ -45,10 +49,11 @@ def _infer_cost_source(cli_path: str, pricing: dict[str, Any]) -> CostSource:
     6. Binary ends with ``agy``/``antigravity``  → ``antigravity_json``
     7. Binary ends with ``devin``                → ``devin_export``
     8. Binary ends with ``pi``                   → ``pi_json``
-    9. Pricing has ``usd_per_input_token``
-       AND ``usd_per_output_token``              → ``tokens``
-    10. Pricing has ``usd_per_premium_request``  → ``premium_request``
-    11. Fallback                                 → ``none``
+    9. Binary is ``qodercli``/``qodercli-wake``/``qoder`` → ``qoder_json``
+    10. Pricing has ``usd_per_input_token``
+        AND ``usd_per_output_token``             → ``tokens``
+    11. Pricing has ``usd_per_premium_request``  → ``premium_request``
+    12. Fallback                                 → ``none``
 
     An explicit ``cost_source`` in the YAML always takes precedence over
     inference — this function is only called when the field is absent.
@@ -75,6 +80,8 @@ def _infer_cost_source(cli_path: str, pricing: dict[str, Any]) -> CostSource:
         return CostSource.DEVIN_EXPORT
     if stem == "pi":
         return CostSource.PI_JSON
+    if stem in ("qodercli", "qodercli-wake", "qoder"):
+        return CostSource.QODER_JSON
     # Generic per-token pricing (any CLI that reports token counts via regex).
     if pricing.get("usd_per_input_token") and pricing.get("usd_per_output_token"):
         return CostSource.TOKENS

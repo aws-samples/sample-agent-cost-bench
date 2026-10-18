@@ -154,14 +154,40 @@ def parse_kiro_stream_json_credits(stdout: str) -> float | None:
     We sum across ``turn_completion`` events defensively in case a single
     invocation ever produces more than one.
 
-    NOTE: we deliberately do NOT return ``elapsedTime`` as a latency. It is
-    per-turn model time (and does not reliably total the run duration), so
-    surfacing it would override the harness's true wall-clock measurement and
-    make Kiro look far faster than it was. Latency comes from wall-clock instead.
+    kiro-cli 2.32+ (default v2 engine) reports credits differently: a
+    ``type: "metadata"`` event at the end of each turn carries a
+    ``meteringUsage`` list with one entry per model call in that turn::
+
+        {"type":"metadata","data":{
+            "meteringUsage":[{"value":0.2401,"unit":"credit"},
+                             {"value":0.1310,"unit":"credit"}],
+            "turnDurationMs":8178}}
+
+    Those values are summed across entries and events. When both shapes are
+    present, ``turn_completion`` wins so the same credits are never counted
+    twice.
+
+    NOTE: we deliberately do NOT return ``elapsedTime`` / ``turnDurationMs`` as
+    a latency. It is per-turn model time (and does not reliably total the run
+    duration), so surfacing it would override the harness's true wall-clock
+    measurement and make Kiro look far faster than it was. Latency comes from
+    wall-clock instead.
     """
     credits_total = 0.0
     saw_credit = False
+    metering_total = 0.0
+    saw_metering = False
     for obj in _find_json_objects(stdout):
+        if obj.get("type") == "metadata":
+            for entry in (obj.get("data") or {}).get("meteringUsage") or []:
+                if (
+                    isinstance(entry, dict)
+                    and entry.get("unit") == "credit"
+                    and isinstance(entry.get("value"), (int, float))
+                ):
+                    metering_total += float(entry["value"])
+                    saw_metering = True
+            continue
         if obj.get("type") != "sessionUpdate":
             continue
         update = (obj.get("data") or {}).get("update") or {}
@@ -178,7 +204,9 @@ def parse_kiro_stream_json_credits(stdout: str) -> float | None:
             ):
                 credits_total += float(summary["usage"])
                 saw_credit = True
-    return credits_total if saw_credit else None
+    if saw_credit:
+        return credits_total
+    return metering_total if saw_metering else None
 
 
 def parse_kiro_usage(stdout: str, stderr: str, pricing: Pricing) -> Usage:
@@ -1194,6 +1222,87 @@ def parse_pi_usage(stdout: str, stderr: str, pricing: Pricing) -> Usage:
     )
 
 
+# ---------------------------------------------------------------------------
+# Qoder CLI JSON (`qodercli -p "..." -o json`)
+# ---------------------------------------------------------------------------
+
+def parse_qoder_usage(stdout: str, stderr: str, pricing: Pricing) -> Usage:
+    """Parse the Qoder CLI's ``-p -o json`` result object.
+
+    Qoder prints a single Claude-Code-shaped ``type: "result"`` object. The
+    run totals live at its top level::
+
+        {
+          "type": "result",
+          "duration_ms": 12622,
+          "total_cost_usd": 0,
+          "total_credits": 0.6097,
+          "usage": {
+            "input_tokens": 0, "output_tokens": 0,
+            "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0
+          },
+          "modelUsage": {"auto": {...}}
+        }
+
+    Qoder bills in credits and reports ``total_cost_usd`` as 0, so cost is::
+
+        cost = total_credits × usd_per_credit
+
+    ``usd_per_credit`` comes from the runner's ``pricing`` block. When it is
+    unset, cost is unknown (``None``), the same as Kiro; the reported
+    ``total_cost_usd: 0`` is not used because it would read as "free". Native
+    credits are always kept in ``raw_credits``. ``total_cost_usd`` is used only
+    when the output carries no ``total_credits``. The per-model ``modelUsage``
+    breakdown is not read: the top-level fields are already the run totals.
+
+    Token semantics follow Claude Code: ``input_tokens`` is the fresh slice, so
+    total input = ``input_tokens + cache_read_input_tokens +
+    cache_creation_input_tokens``. All-zero token counts are reported as
+    unknown (``None``) rather than 0, since a completed turn always consumes
+    tokens.
+    """
+    objs = _find_json_objects(stdout) or _find_json_objects(stderr)
+    result_obj = None
+    for o in objs:
+        if o.get("type") == "result":
+            result_obj = o
+    if result_obj is None and objs:
+        result_obj = objs[-1]
+    if not result_obj:
+        return Usage()
+
+    total_credits = result_obj.get("total_credits")
+    credits = float(total_credits) if isinstance(total_credits, (int, float)) else None
+    if credits is not None:
+        cost_usd = (
+            credits * pricing.usd_per_credit if pricing.usd_per_credit is not None else None
+        )
+    else:
+        total_cost = result_obj.get("total_cost_usd")
+        cost_usd = float(total_cost) if isinstance(total_cost, (int, float)) else None
+
+    usage = result_obj.get("usage")
+    usage = usage if isinstance(usage, dict) else {}
+    in_tok = _safe_int(usage.get("input_tokens")) or 0
+    out_tok = _safe_int(usage.get("output_tokens")) or 0
+    cache_read = _safe_int(usage.get("cache_read_input_tokens")) or 0
+    cache_write = _safe_int(usage.get("cache_creation_input_tokens")) or 0
+
+    duration_ms = result_obj.get("duration_ms")
+    seconds = (duration_ms / 1000.0) if isinstance(duration_ms, (int, float)) else None
+
+    total_in = in_tok + cache_read + cache_write
+    return Usage(
+        cost_usd=cost_usd,
+        input_tokens=total_in or None,
+        cached_input_tokens=cache_read or None,
+        cache_write_input_tokens=cache_write or None,
+        output_tokens=out_tok or None,
+        seconds=seconds,
+        raw_credits=credits,
+    )
+
+
 def parse_token_regex_usage(
     stdout: str, stderr: str, pricing: Pricing, token_regex: str | None
 ) -> Usage:
@@ -1350,6 +1459,8 @@ def parse_usage(
         return parse_devin_usage(p, workspace)
     if src == CostSource.PI_JSON:
         return parse_pi_usage(stdout, stderr, p)
+    if src == CostSource.QODER_JSON:
+        return parse_qoder_usage(stdout, stderr, p)
     if src == CostSource.KAS_PROXY_METRICS:
         return parse_kas_proxy_metrics_usage(p, run_id)
     if src == CostSource.TOKENS:
