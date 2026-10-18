@@ -336,6 +336,9 @@ def test_cost_source_inferred_from_binary_name(tmp_path, monkeypatch):
         # pi reports USD itself; optional token rates must not demote it to TOKENS
         ("pi",            {"usd_per_input_token": 0.000002,
                            "usd_per_output_token": 0.00001},    CostSource.PI_JSON),
+        ("qodercli",      {},                                   CostSource.QODER_JSON),
+        ("qodercli-wake", {},                                   CostSource.QODER_JSON),
+        ("/usr/local/bin/qoder", {},                            CostSource.QODER_JSON),
         # a longer name merely ENDING in "pi" is not the pi CLI
         ("copi",          {},                                   CostSource.NONE),
         ("my-cli",        {"usd_per_input_token": 0.000001,

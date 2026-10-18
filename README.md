@@ -14,7 +14,7 @@ Bring any model, any CLI, and any use case — a real GitHub repo with your own 
 
 The framework is designed to be flexible:
 
-- **Any CLI** — Kiro, Claude Code, GitHub Copilot, Cursor, OpenAI Codex, Antigravity, OpenCode, Devin, pi - Currently supported CLI's.
+- **Any CLI** — Kiro, Claude Code, GitHub Copilot, Cursor, OpenAI Codex, Antigravity, OpenCode, Devin, pi, Qoder - Currently supported CLI's.
 - **Any model** — Anthropic (Claude), OpenAI (o-series, GPT-5.x) or anything your CLI exposes.
 - **Any use case** — greenfield tasks included out of the box, or bring your own GitHub repo (public or private). The framework clones it, hands it to the model, and verifies the result.
 - **Multiple verification options** — pytest, Docker containers, custom scorers, or LLM-judge rubrics. Pick the one that fits; no verification code is required for rubric-graded tasks.
@@ -143,6 +143,7 @@ export OPENAI_API_KEY=...        # Codex (or use `codex auth login`)
 # pi: reads its provider's own credentials (e.g. AWS credentials for
 #     amazon-bedrock, ANTHROPIC_API_KEY / OPENAI_API_KEY for those providers).
 #     Verify with: pi auth check --provider <name> --json
+# Qoder: use `qodercli login`
 ```
 
 The harness inherits the parent shell's environment, so all CLIs pick up their keys automatically — no per-runner `env:` block needed.
@@ -164,6 +165,7 @@ Pricing rates are volatile and change over time. Check each vendor's current pri
 | **OpenCode** | Provider cost read directly from the JSON output; token-level rates optional as a fallback (see below) | Rates depend on the provider you configure in OpenCode |
 | **Devin** | Token-level rates (see below) | `devin models list` prints per-MTok rates per model slug |
 | **pi** | No pricing config needed — prices each turn from its bundled model catalog and reports USD | `pi --list-models` shows the catalog; token rates may be supplied as a fallback for unpriced models |
+| **Qoder** | `usd_per_credit: 0.02` (the default when omitted) — cost is `total_credits` × rate from the `-o json` result | Qoder reports `total_cost_usd: 0`, so cost is derived from credits; check your plan's credit value |
 
 #### Token-level pricing (Cursor, Codex, and Devin)
 
@@ -213,6 +215,7 @@ runners:
     pricing:
       usd_per_credit: 0.04
     cli_base_args: [chat, --no-interactive, --trust-all-tools,
+                    --output-format, stream-json,   # credits telemetry (kiro-cli 2.32+)
                     "--model={model}", "--effort={effort}"]
 
   - name: claude-code

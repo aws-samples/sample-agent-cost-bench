@@ -104,6 +104,7 @@ class CostSource(str, Enum):
     ANTIGRAVITY_JSON = "antigravity_json"  # parse `agy -p --output-format json` result object
     DEVIN_EXPORT = "devin_export"        # parse `devin -p --export <file>` ATIF final_metrics
     PI_JSON = "pi_json"                  # parse `pi -p --mode json` JSONL turn_end usage/cost
+    QODER_JSON = "qoder_json"            # parse `qodercli -o json` total_credits × usd_per_credit
     TOKENS = "tokens"                    # parse token counts via regex, price per-token
     PREMIUM_REQUEST = "premium_request"  # fixed N premium/credit requests per run × price
     KAS_PROXY_METRICS = "kas_proxy_metrics"  # read kas-proxy's metrics.jsonl, correlated by run_id
@@ -133,13 +134,15 @@ class Pricing(BaseModel):
       - pi_json           -> (none; the CLI reports a USD cost per turn from its
                              own model catalog. Optional token rates are used
                              only as a fallback when that cost is absent.)
+      - qoder_json        -> usd_per_credit (optional; defaults to $0.02/credit)
       - tokens            -> usd_per_input_token + usd_per_output_token
       - premium_request   -> usd_per_premium_request
       - kas_proxy_metrics -> kas_metrics_file + kas_metrics_timeout_seconds
     """
 
     usd_per_credit: float | None = Field(
-        default=None, description="USD value of one Kiro credit (for kiro_credits)"
+        default=None,
+        description="USD value of one credit (Kiro for kiro_credits, Qoder for qoder_json)",
     )
     usd_per_input_token: float | None = Field(
         default=None, description="USD per input token (for tokens / codex_json cost_source)"

@@ -15,6 +15,7 @@ from agent_cost_bench.usage import (
     parse_devin_usage,
     parse_kiro_usage,
     parse_pi_usage,
+    parse_qoder_usage,
     parse_token_regex_usage,
     parse_usage,
 )
@@ -104,6 +105,48 @@ def test_kiro_stream_json_wins_and_suppresses_bogus_time():
     u = parse_kiro_usage(stdout, "", Pricing(usd_per_credit=0.04))
     assert abs(u.raw_credits - 24.384) < 1e-9      # from turn_completion, not "0.5"
     assert u.seconds is None                        # bogus 16.693s suppressed
+
+
+def _kiro_metering(values: list[float], turn_ms: int = 8178) -> str:
+    """One kiro-cli 2.32+ stream-json end-of-turn metadata event."""
+    return json.dumps({"type": "metadata", "data": {
+        "sessionId": "s", "contextUsagePercentage": 7.2,
+        "meteringUsage": [
+            {"value": v, "unit": "credit", "unitPlural": "credits"} for v in values
+        ],
+        "turnDurationMs": turn_ms,
+    }})
+
+
+def test_kiro_metering_usage_credits():
+    # kiro-cli 2.32.0 (v2 engine, stream-json): no banner and no turn_completion;
+    # one metadata event lists credits per model call in the turn.
+    stdout = "\n".join([
+        '{"type":"runStarted","data":{"payloadSchema":"acp","engine":"v2"}}',
+        '{"type":"metadata","data":{"sessionId":"s","contextUsagePercentage":4.2}}',
+        _kiro_metering([0.24016644361525707, 0.1310556815920398,
+                        0.13522962271973463, 0.12752346119402985]),
+        '{"type":"runFinished","data":{"status":"success","finalText":"ok"}}',
+    ])
+    u = parse_kiro_usage(stdout, "", Pricing(usd_per_credit=0.04))
+    expected = 0.24016644361525707 + 0.1310556815920398 + 0.13522962271973463 + 0.12752346119402985
+    assert abs(u.raw_credits - expected) < 1e-12
+    assert abs(u.cost_usd - expected * 0.04) < 1e-12
+    # turnDurationMs is per-turn model time, not run latency.
+    assert u.seconds is None
+
+
+def test_kiro_metering_sums_across_turns():
+    stdout = _kiro_metering([1.0, 0.25]) + "\n" + _kiro_metering([0.5]) + "\n"
+    u = parse_kiro_usage(stdout, "", Pricing(usd_per_credit=0.04))
+    assert abs(u.raw_credits - 1.75) < 1e-12
+
+
+def test_kiro_turn_completion_wins_over_metering():
+    # If a CLI ever emits both shapes for the same turn, don't double count.
+    stdout = _kiro_v3_turn(2.0, 5000) + "\n" + _kiro_metering([2.0]) + "\n"
+    u = parse_kiro_usage(stdout, "", Pricing(usd_per_credit=0.04))
+    assert abs(u.raw_credits - 2.0) < 1e-12
 
 
 def test_kiro_no_telemetry_returns_none():
@@ -1071,3 +1114,110 @@ def test_pi_dispatch_via_parse_usage():
     assert u.input_tokens == 3000
     assert u.cached_input_tokens == 1000
     assert u.output_tokens == 300
+
+
+# ---------------------------------------------------------------------------
+# qoder_json cost source (`qodercli -p -o json`)
+# ---------------------------------------------------------------------------
+
+
+def _qoder_result(cost_usd=0, credits=0.6097447714285714, inp=0, out=0,
+                  cache_read=0, cache_write=0, model_usage=None):
+    """Build a `qodercli -p -o json` result object (shape of the real sample)."""
+    if model_usage is None:
+        model_usage = {"auto": {
+            "inputTokens": inp, "outputTokens": out,
+            "cacheReadInputTokens": cache_read, "cacheCreationInputTokens": cache_write,
+            "webSearchRequests": 0, "costUSD": cost_usd, "contextWindow": 0,
+            "maxOutputTokens": 0, "credits": credits,
+        }}
+    return json.dumps({
+        "type": "result", "subtype": "success", "duration_ms": 12622,
+        "duration_api_ms": 12462, "is_error": False, "num_turns": 1,
+        "result": "ok", "stop_reason": "end_turn",
+        "total_cost_usd": cost_usd, "total_credits": credits,
+        "usage": {"input_tokens": inp, "output_tokens": out,
+                  "cache_creation_input_tokens": cache_write,
+                  "cache_read_input_tokens": cache_read},
+        "modelUsage": model_usage,
+    })
+
+
+def test_qoder_sample_output_uses_default_credit_rate():
+    """The real sample: total_cost_usd 0, credits populated, no pricing set →
+    cost = credits × $0.02."""
+    u = parse_qoder_usage(_qoder_result(), "", Pricing())
+    assert abs(u.cost_usd - 0.6097447714285714 * 0.02) < 1e-12
+    assert abs(u.raw_credits - 0.6097447714285714) < 1e-12
+    assert u.seconds == 12.622
+    # All-zero token counts are unknown, not "0 tokens used".
+    assert u.input_tokens is None
+    assert u.output_tokens is None
+
+
+def test_qoder_configured_credit_rate_wins_over_default():
+    u = parse_qoder_usage(_qoder_result(credits=10.0), "", Pricing(usd_per_credit=0.05))
+    assert abs(u.cost_usd - 0.5) < 1e-12
+
+
+def test_qoder_credits_take_precedence_over_total_cost_usd():
+    """total_cost_usd is ignored whenever total_credits is present."""
+    u = parse_qoder_usage(_qoder_result(cost_usd=9.99, credits=5.0), "",
+                          Pricing(usd_per_credit=0.02))
+    assert abs(u.cost_usd - 0.1) < 1e-12
+
+
+def test_qoder_falls_back_to_total_cost_usd_without_credits():
+    obj = json.loads(_qoder_result(cost_usd=0.42))
+    del obj["total_credits"]
+    u = parse_qoder_usage(json.dumps(obj), "", Pricing(usd_per_credit=0.02))
+    assert abs(u.cost_usd - 0.42) < 1e-12
+    assert u.raw_credits is None
+
+
+def test_qoder_reads_top_level_totals_and_usage():
+    stdout = _qoder_result(credits=0.6, inp=110, out=55,
+                           cache_read=1000, cache_write=200)
+    u = parse_qoder_usage(stdout, "", Pricing(usd_per_credit=0.02))
+    assert abs(u.cost_usd - 0.6 * 0.02) < 1e-12
+    assert abs(u.raw_credits - 0.6) < 1e-12
+    assert u.input_tokens == 110 + 1000 + 200
+    assert u.cached_input_tokens == 1000
+    assert u.cache_write_input_tokens == 200
+    assert u.output_tokens == 55
+
+
+def test_qoder_ignores_model_usage_breakdown():
+    """Top-level totals win; per-model modelUsage values are not read."""
+    stdout = _qoder_result(credits=2.0, model_usage={
+        "auto": {"costUSD": 9.99, "credits": 99.0, "inputTokens": 12345},
+    })
+    u = parse_qoder_usage(stdout, "", Pricing(usd_per_credit=0.02))
+    assert abs(u.cost_usd - 0.04) < 1e-12
+    assert abs(u.raw_credits - 2.0) < 1e-12
+    assert u.input_tokens is None
+
+
+def test_qoder_malformed_output_returns_empty_usage():
+    for stdout in ("", "not json", "{broken"):
+        u = parse_qoder_usage(stdout, "", Pricing())
+        assert u.cost_usd is None
+        assert u.raw_credits is None
+        assert u.input_tokens is None
+
+
+def test_qoder_dispatch_via_parse_usage():
+    """parse_usage routes CostSource.QODER_JSON (inferred from the binary)."""
+    stdout = _qoder_result(credits=1.5, inp=300, out=40)
+    t = make_cli_target({
+        "name": "qoder",
+        "cli_path": "qodercli-wake",
+        "model_id": "auto",
+        "pricing": {"usd_per_credit": 0.02},
+    })
+    assert t.cost_source == CostSource.QODER_JSON
+    u = parse_usage(t, stdout, "")
+    assert abs(u.cost_usd - 0.03) < 1e-12
+    assert abs(u.raw_credits - 1.5) < 1e-12
+    assert u.input_tokens == 300
+    assert u.output_tokens == 40
