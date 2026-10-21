@@ -338,6 +338,45 @@ The `pi` coding agent is a bring-your-own-provider CLI: it talks to whichever pr
 
 The harness sums `cost.total` across every `turn_end`, so **no pricing block is required** — the same arrangement as Claude Code. Per-token rates are honoured only as a fallback for a model the catalog does not price. `usage.input` is the fresh, non-cached prompt slice, reported alongside `cacheRead` / `cacheWrite`, so total input is the sum of the three.
 
+**Per-turn audit trail (`usage_events`).** Summing turns loses which provider/model each turn ran on and the cache-read vs cache-write split. So each pi result in the JSON report also carries an optional `results[].usage_events` block, one record per `turn_end` in stream order:
+
+```json
+"usage_events": {
+  "source": "pi_json",
+  "cost_basis": "pi_reported",
+  "completeness": "complete",
+  "partial_reasons": [],
+  "events": [
+    {"seq": 0, "source": "turn_end", "provider": "amazon-bedrock",
+     "model": "global.anthropic.claude-sonnet-5", "input": 3, "output": 70,
+     "cache_read": 0, "cache_write": 6512, "cost_total": 0.025479}
+  ]
+}
+```
+
+When `cost_basis` is `pi_reported`, the sum of `cost_total` equals `usage.cost_usd`, the sum of `input + cache_read + cache_write` equals `usage.input_tokens`, and the sum of `output` equals `usage.output_tokens`. Any other value means `cost_usd` was not taken wholly from pi's per-turn figures:
+
+| `cost_basis` | Meaning |
+|---|---|
+| `pi_reported` | Every turn carried a pi-reported cost, and `cost_usd` is their sum |
+| `pi_reported_partial` | `cost_usd` is the sum of the pi-reported costs, but at least one turn reported none (`cost_total: null`) |
+| `pi_reported_agent_end` | The stream had no `turn_end`, so records and cost come from the final `agent_end` messages (`source: "agent_end"`) |
+| `configured_rates` | `cost_usd` was computed from the runner's per-token `pricing` rates |
+| `none` | No cost could be determined, so `cost_usd` is `null` |
+
+`completeness` is `complete` only when every record came from a `turn_end` with usage, a pi-reported cost and a provider/model. Otherwise it is `partial`, and `partial_reasons` lists at least one of these codes (`<n>` is the record's `seq`, or for `malformed_usage` the 0-based position of the `turn_end` in the stream):
+
+- `turn_missing_cost:<n>`: the turn reported no `cost.total`
+- `zero_cost_with_tokens`: pi reported $0 alongside real tokens, so the configured rates were used instead
+- `no_configured_rates`: no reported cost and no pricing rates, so `cost_usd` is `null`
+- `no_turn_end_used_agent_end`: the `agent_end` fallback was used
+- `no_usage_in_stream`: the stream carried no usage at all (`events` is empty)
+- `missing_provenance:<n>`: the turn had no provider or model string
+- `malformed_usage:<n>`: a `turn_end` had a malformed message or usage, and no record was written for it
+- `phase_partial`: a multi-phase (spec-driven) run merged a partial phase that gave no reason of its own
+
+For a spec-driven run, the phases' records are concatenated and `seq` is renumbered across the whole run. Records are built only from the keys shown above, so no prompt, completion, thinking, tool-call, tool-result or error text appears in them. The raw `transcript` field is separate and is not filtered. The block is absent for every other cost source and from reports written before it existed. `agent-cost-bench report` reads both kinds of report.
+
 ```yaml
 - name: pi
   display_name: "pi (claude-sonnet-5)"

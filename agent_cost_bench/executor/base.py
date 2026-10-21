@@ -610,6 +610,7 @@ class BaseExecutor:
                 reasoning_output_tokens=usage.reasoning_output_tokens,
                 premium_requests=usage.premium_requests,
                 cli_reported_seconds=usage.seconds,
+                usage_events=usage.usage_events,
                 error=None if exit_code == 0 else f"CLI exited with code {exit_code}",
             )
             if phase_result.model_unavailable:

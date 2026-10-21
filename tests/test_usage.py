@@ -1224,3 +1224,229 @@ def test_qoder_dispatch_via_parse_usage():
     assert abs(u.raw_credits - 1.5) < 1e-12
     assert u.input_tokens == 300
     assert u.output_tokens == 40
+
+
+# ---------------------------------------------------------------------------
+# pi_json per-turn usage_events (issue #21)
+# ---------------------------------------------------------------------------
+
+
+def _pi_turn(usage, *, provider="amazon-bedrock", model="global.anthropic.claude-sonnet-5",
+             content=None, extra=None) -> str:
+    msg = {"role": "assistant", "provider": provider, "model": model, "usage": usage,
+           "content": content or [{"type": "text", "text": "ok"}], "stopReason": "stop"}
+    if extra:
+        msg.update(extra)
+    return json.dumps({"type": "turn_end", "message": msg, "toolResults": []})
+
+
+def test_usage_events_records_one_per_turn_in_order():
+    stdout = _pi_stream([
+        _pi_usage(3, 70, cache_read=0, cache_write=6512, cost_total=0.025479),
+        _pi_usage(1, 16, cache_read=6512, cache_write=91, cost_total=0.00253785),
+        _pi_usage(5, 9, cache_read=6603, cache_write=0, cost_total=None),
+    ])
+    ev = parse_pi_usage(stdout, "", Pricing()).usage_events
+    assert ev["source"] == "pi_json"
+    recs = ev["events"]
+    assert [r["seq"] for r in recs] == [0, 1, 2]
+    assert recs[0] == {
+        "seq": 0, "source": "turn_end", "provider": "amazon-bedrock",
+        "model": "global.anthropic.claude-sonnet-5", "input": 3, "output": 70,
+        "cache_read": 0, "cache_write": 6512, "cost_total": 0.025479,
+    }
+    assert recs[2]["cost_total"] is None
+
+
+def test_usage_events_records_keep_cache_read_and_write_separate():
+    stdout = _pi_stream([_pi_usage(1, 16, cache_read=6512, cache_write=91, cost_total=0.01)])
+    rec = parse_pi_usage(stdout, "", Pricing()).usage_events["events"][0]
+    assert rec["cache_read"] == 6512 and rec["cache_write"] == 91
+    assert isinstance(rec["cache_read"], int) and isinstance(rec["cache_write"], int)
+
+
+def test_usage_events_records_per_turn_provider_and_model():
+    lines = [
+        _pi_turn(_pi_usage(1, 1, cost_total=0.1), provider="anthropic", model="m-a"),
+        _pi_turn(_pi_usage(2, 2, cost_total=0.2), provider="openai", model="m-b"),
+    ]
+    ev = parse_pi_usage("\n".join(lines), "", Pricing()).usage_events
+    assert [(r["provider"], r["model"]) for r in ev["events"]] == [
+        ("anthropic", "m-a"), ("openai", "m-b")]
+    assert ev["completeness"] == "complete"
+
+
+def test_usage_events_reconcile_property_over_generated_turns():
+    import random
+    rng = random.Random(21)
+    for _ in range(200):
+        turns = [
+            _pi_usage(rng.randint(0, 5000), rng.randint(0, 5000),
+                      cache_read=rng.randint(0, 50000), cache_write=rng.randint(0, 9000),
+                      cost_total=rng.uniform(1e-7, 2.0))
+            for _ in range(rng.randint(1, 30))
+        ]
+        u = parse_pi_usage(_pi_stream(turns), "", Pricing())
+        ev = u.usage_events
+        assert ev["cost_basis"] == "pi_reported"
+        assert ev["completeness"] == "complete" and ev["partial_reasons"] == []
+        assert len(ev["events"]) == len(turns)
+        assert abs(sum(r["cost_total"] for r in ev["events"]) - u.cost_usd) <= 1e-9
+        assert sum(r["input"] + r["cache_read"] + r["cache_write"]
+                   for r in ev["events"]) == (u.input_tokens or 0)
+        assert sum(r["output"] for r in ev["events"]) == (u.output_tokens or 0)
+
+
+def test_usage_events_completeness_missing_cost_on_a_turn():
+    stdout = _pi_stream([_pi_usage(1, 1, cost_total=0.5), _pi_usage(2, 2, cost_total=None)])
+    u = parse_pi_usage(stdout, "", Pricing())
+    ev = u.usage_events
+    assert u.cost_usd == 0.5
+    assert ev["cost_basis"] == "pi_reported_partial"
+    assert ev["completeness"] == "partial"
+    assert "turn_missing_cost:1" in ev["partial_reasons"]
+
+
+def test_usage_events_completeness_zero_cost_with_tokens_uses_rates():
+    stdout = _pi_stream([_pi_usage(100, 10, cost_total=0.0)])
+    u = parse_pi_usage(stdout, "", Pricing(usd_per_input_token=0.01, usd_per_output_token=0.02))
+    ev = u.usage_events
+    assert ev["cost_basis"] == "configured_rates"
+    assert ev["completeness"] == "partial"
+    assert "zero_cost_with_tokens" in ev["partial_reasons"]
+    assert ev["events"][0]["cost_total"] == 0.0  # what pi emitted, not the fallback
+
+
+def test_usage_events_completeness_no_cost_no_rates_is_none():
+    stdout = _pi_stream([_pi_usage(100, 10, cost_total=None)])
+    u = parse_pi_usage(stdout, "", Pricing())
+    assert u.cost_usd is None
+    ev = u.usage_events
+    assert ev["cost_basis"] == "none"
+    assert ev["completeness"] == "partial"
+    assert {"turn_missing_cost:0", "no_configured_rates"} <= set(ev["partial_reasons"])
+
+
+def test_usage_events_completeness_agent_end_fallback():
+    msgs = [{"role": "assistant", "provider": "p", "model": "m",
+             "usage": _pi_usage(4, 5, cost_total=0.3)}]
+    stdout = json.dumps({"type": "agent_end", "messages": msgs})
+    u = parse_pi_usage(stdout, "", Pricing())
+    ev = u.usage_events
+    assert u.cost_usd == 0.3
+    assert ev["cost_basis"] == "pi_reported_agent_end"
+    assert ev["completeness"] == "partial"
+    assert "no_turn_end_used_agent_end" in ev["partial_reasons"]
+    assert ev["events"][0]["source"] == "agent_end"
+
+
+def test_usage_events_completeness_empty_stream():
+    for stdout in ("", json.dumps({"type": "agent_settled"})):
+        u = parse_pi_usage(stdout, "", Pricing())
+        ev = u.usage_events
+        assert u.cost_usd is None
+        assert ev == {"source": "pi_json", "cost_basis": "none", "completeness": "partial",
+                      "partial_reasons": ["no_usage_in_stream"], "events": []}
+
+
+def test_usage_events_completeness_missing_provenance():
+    stdout = _pi_turn(_pi_usage(1, 1, cost_total=0.1), provider=None, model=None)
+    ev = parse_pi_usage(stdout, "", Pricing()).usage_events
+    assert ev["events"][0]["provider"] is None and ev["events"][0]["model"] is None
+    assert ev["completeness"] == "partial"
+    assert "missing_provenance:0" in ev["partial_reasons"]
+
+
+def test_usage_events_completeness_exactly_one_state_with_reason():
+    for turns in ([_pi_usage(1, 1, cost_total=0.1)], [_pi_usage(1, 1)], []):
+        ev = parse_pi_usage(_pi_stream(turns), "", Pricing()).usage_events
+        assert ev["completeness"] in ("complete", "partial")
+        if ev["completeness"] == "partial":
+            assert ev["partial_reasons"]
+        else:
+            assert ev["partial_reasons"] == []
+
+
+def test_usage_events_message_end_duplicates_do_not_change_records():
+    turns = [_pi_usage(3, 70, cache_write=6512, cost_total=0.02),
+             _pi_usage(1, 16, cache_read=6512, cost_total=0.003)]
+    with_me = _pi_stream(turns)
+    without_me = "\n".join(
+        line for line in with_me.splitlines() if json.loads(line)["type"] != "message_end"
+    )
+    a = parse_pi_usage(with_me, "", Pricing())
+    b = parse_pi_usage(without_me, "", Pricing())
+    assert a.usage_events == b.usage_events
+    assert len(a.usage_events["events"]) == 2
+    assert (a.cost_usd, a.input_tokens, a.output_tokens, a.cached_input_tokens) == (
+        b.cost_usd, b.input_tokens, b.output_tokens, b.cached_input_tokens)
+
+
+_SENTINELS = ("SENTINEL_PROMPT_7f3a", "SENTINEL_COMPLETION_7f3a", "SENTINEL_THINKING_7f3a",
+              "SENTINEL_TOOLCALL_7f3a", "SENTINEL_TOOLRESULT_7f3a", "SENTINEL_ERROR_7f3a")
+
+
+def test_usage_events_sentinel_content_never_emitted():
+    usage = _pi_usage(10, 20, cache_read=1, cache_write=2, cost_total=0.05)
+    usage["note"] = "SENTINEL_COMPLETION_7f3a"           # unknown key inside usage
+    usage["cost"]["detail"] = "SENTINEL_ERROR_7f3a"      # unknown key inside cost
+    content = [
+        {"type": "text", "text": "SENTINEL_COMPLETION_7f3a"},
+        {"type": "thinking", "thinking": "SENTINEL_THINKING_7f3a"},
+        {"type": "toolCall", "name": "bash", "arguments": {"cmd": "SENTINEL_TOOLCALL_7f3a"}},
+    ]
+    turn = json.loads(_pi_turn(usage, content=content,
+                               extra={"errorMessage": "SENTINEL_ERROR_7f3a"}))
+    turn["toolResults"] = [{"content": [{"type": "text", "text": "SENTINEL_TOOLRESULT_7f3a"}]}]
+    lines = [
+        json.dumps({"type": "message_start", "message": {"role": "user",
+                    "content": [{"type": "text", "text": "SENTINEL_PROMPT_7f3a"}]}}),
+        json.dumps(turn),
+        json.dumps({"type": "agent_end", "messages": [turn["message"]]}),
+    ]
+    u = parse_pi_usage("\n".join(lines), "", Pricing())
+    dumped = json.dumps(u.usage_events)
+    for s in _SENTINELS:
+        assert s not in dumped
+    allowed = {"seq", "source", "provider", "model", "input", "output",
+               "cache_read", "cache_write", "cost_total"}
+    assert set(u.usage_events) == {"source", "cost_basis", "completeness",
+                                   "partial_reasons", "events"}
+    for rec in u.usage_events["events"]:
+        assert set(rec) == allowed
+
+
+def test_usage_events_adversarial_malformed_and_hostile_streams():
+    hostile = [
+        json.dumps({"type": "turn_end", "message": "not-a-dict"}),
+        json.dumps({"type": "turn_end", "message": {"usage": ["x"]}}),
+        json.dumps({"type": "turn_end", "message": {"provider": {"nested": "SENTINEL_PROMPT_7f3a"},
+                    "model": 7, "usage": {"input": "12", "output": None,
+                    "cost": {"total": "0.5"}}}}),
+        '{"type":"turn_end","message":{"provider":"p","model":"m","usage":'
+        '{"input":NaN,"output":Infinity,"cost":{"total":NaN}}}}',
+        json.dumps({"type": "agent_end", "messages": "SENTINEL_PROMPT_7f3a"}),
+    ]
+    u = parse_pi_usage("\n".join(hostile), "", Pricing())   # must not raise
+    ev = u.usage_events
+    assert ev["completeness"] == "partial"
+    assert {"malformed_usage:0", "malformed_usage:1"} <= set(ev["partial_reasons"])
+    assert "SENTINEL_PROMPT_7f3a" not in json.dumps(ev)
+    assert [r["provider"] for r in ev["events"]] == [None, "p"]
+    assert ev["events"][0] == {"seq": 0, "source": "turn_end", "provider": None, "model": None,
+                               "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
+                               "cost_total": None}
+    assert ev["events"][1]["cost_total"] is None
+
+
+def test_usage_events_adversarial_huge_turn_count():
+    n = 5000
+    u = parse_pi_usage(_pi_stream([_pi_usage(1, 1, cost_total=0.001)] * n,
+                                  include_agent_end=False), "", Pricing())
+    assert len(u.usage_events["events"]) == n
+    assert abs(sum(r["cost_total"] for r in u.usage_events["events"]) - u.cost_usd) <= 1e-9
+
+
+def test_usage_events_absent_for_other_cost_sources():
+    stdout = json.dumps({"type": "result", "total_cost_usd": 0.1, "usage": {"input_tokens": 1}})
+    assert parse_claude_usage(stdout, "", Pricing()).usage_events is None

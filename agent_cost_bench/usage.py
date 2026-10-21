@@ -33,6 +33,7 @@ new CLI be added from config alone.
 from __future__ import annotations
 
 import json
+import math
 import re
 import time as _time
 from pathlib import Path
@@ -1081,6 +1082,23 @@ def parse_devin_usage(pricing: Pricing, workspace: Path | None) -> Usage:
 # ---------------------------------------------------------------------------
 
 
+# The ONLY keys a per-turn usage record may carry (issue #21: no prompt,
+# completion, thinking, tool call, tool result or error text). Records are
+# projected through this tuple, so a stray key added upstream is dropped.
+_PI_EVENT_KEYS = (
+    "seq", "source", "provider", "model",
+    "input", "output", "cache_read", "cache_write", "cost_total",
+)
+
+
+def _pi_int(val) -> int:
+    """Token count as the totals use it; non-finite (NaN/Infinity, which
+    ``json.loads`` accepts) counts as 0 instead of raising from ``int()``."""
+    if isinstance(val, float) and not math.isfinite(val):
+        return 0
+    return _safe_int(val) or 0
+
+
 def parse_pi_usage(stdout: str, stderr: str, pricing: Pricing) -> Usage:
     """Parse the pi coding agent's ``-p --mode json`` JSON-Lines stream.
 
@@ -1127,28 +1145,74 @@ def parse_pi_usage(stdout: str, stderr: str, pricing: Pricing) -> Usage:
     Timing comes from the span between the first and last event timestamp
     (``pi`` reports no duration field); ``None`` when fewer than two timestamps
     are present.
+
+    Per-turn provenance is returned on ``Usage.usage_events``: one record per
+    usage-bearing ``turn_end`` (or ``agent_end`` assistant message, in the
+    fallback), built key-by-key from ``_PI_EVENT_KEYS`` so no message content,
+    thinking, tool call, tool result or error text can reach it. ``cost_basis``
+    and ``completeness``/``partial_reasons`` are set in the same branches that
+    choose reported vs configured cost below.
     """
     in_tok = out_tok = cache_read = cache_write = 0
     reported_cost = 0.0
     saw_usage = False
     saw_cost = False
     timestamps: list[float] = []
+    events: list[dict] = []
+    reasons: list[str] = []
+    turn_ordinal = 0  # count of turn_end events seen, usage-bearing or not
 
-    def _accumulate(msg: dict) -> None:
+    def _reason(code: str) -> None:
+        if code not in reasons:
+            reasons.append(code)
+
+    def _accumulate(msg: dict, source: str) -> None:
         nonlocal in_tok, out_tok, cache_read, cache_write, reported_cost
         nonlocal saw_usage, saw_cost
         usage = msg.get("usage")
         if not isinstance(usage, dict):
+            if source == "turn_end" and usage is not None:
+                _reason(f"malformed_usage:{turn_ordinal}")
             return
         saw_usage = True
-        in_tok += _safe_int(usage.get("input")) or 0
-        out_tok += _safe_int(usage.get("output")) or 0
-        cache_read += _safe_int(usage.get("cacheRead")) or 0
-        cache_write += _safe_int(usage.get("cacheWrite")) or 0
+        t_in = _pi_int(usage.get("input"))
+        t_out = _pi_int(usage.get("output"))
+        t_cr = _pi_int(usage.get("cacheRead"))
+        t_cw = _pi_int(usage.get("cacheWrite"))
+        in_tok += t_in
+        out_tok += t_out
+        cache_read += t_cr
+        cache_write += t_cw
         cost = usage.get("cost")
-        if isinstance(cost, dict) and isinstance(cost.get("total"), (int, float)):
-            reported_cost += float(cost["total"])
+        t_cost: float | None = None
+        if (
+            isinstance(cost, dict)
+            and isinstance(cost.get("total"), (int, float))
+            and math.isfinite(cost["total"])
+        ):
+            t_cost = float(cost["total"])
+            reported_cost += t_cost
             saw_cost = True
+        # Built field-by-field from scalars only: never copy `usage` or `msg`.
+        seq = len(events)
+        provider = msg.get("provider")
+        model = msg.get("model")
+        record = {
+            "seq": seq,
+            "source": source,
+            "provider": provider if isinstance(provider, str) else None,
+            "model": model if isinstance(model, str) else None,
+            "input": t_in,
+            "output": t_out,
+            "cache_read": t_cr,
+            "cache_write": t_cw,
+            "cost_total": t_cost,
+        }
+        events.append({k: record[k] for k in _PI_EVENT_KEYS})
+        if t_cost is None:
+            _reason(f"turn_missing_cost:{seq}")
+        if record["provider"] is None or record["model"] is None:
+            _reason(f"missing_provenance:{seq}")
 
     objs = _find_json_objects(stdout) or _find_json_objects(stderr)
     agent_end: dict | None = None
@@ -1157,20 +1221,30 @@ def parse_pi_usage(stdout: str, stderr: str, pricing: Pricing) -> Usage:
         msg = obj.get("message")
         if isinstance(msg, dict) and isinstance(msg.get("timestamp"), (int, float)):
             timestamps.append(float(msg["timestamp"]))
-        if etype == "turn_end" and isinstance(msg, dict):
-            _accumulate(msg)
+        if etype == "turn_end":
+            if isinstance(msg, dict):
+                _accumulate(msg, "turn_end")
+            else:
+                _reason(f"malformed_usage:{turn_ordinal}")
+            turn_ordinal += 1
         elif etype == "agent_end":
             agent_end = obj
 
     # Fallback: no turn_end in the stream (killed mid-turn) — take the assistant
     # messages from the final agent_end summary instead.
+    used_agent_end = False
     if not saw_usage and agent_end is not None:
-        for msg in agent_end.get("messages") or []:
+        messages = agent_end.get("messages")
+        for msg in messages if isinstance(messages, list) else []:
             if isinstance(msg, dict) and msg.get("role") == "assistant":
-                _accumulate(msg)
+                _accumulate(msg, "agent_end")
+        used_agent_end = saw_usage
+        if used_agent_end:
+            _reason("no_turn_end_used_agent_end")
 
     if not saw_usage:
-        return Usage()
+        _reason("no_usage_in_stream")
+        return Usage(usage_events=_pi_usage_events("none", events, reasons))
 
     total_in = in_tok + cache_read + cache_write
 
@@ -1183,9 +1257,16 @@ def parse_pi_usage(stdout: str, stderr: str, pricing: Pricing) -> Usage:
     # genuinely was no charge, and tokens are zero too, so $0.00 stands.
     if saw_cost and reported_cost == 0.0 and (total_in + out_tok) > 0:
         saw_cost = False
+        _reason("zero_cost_with_tokens")
 
     if saw_cost:
         cost_usd: float | None = reported_cost
+        if used_agent_end:
+            cost_basis = "pi_reported_agent_end"
+        elif any(e["cost_total"] is None for e in events):
+            cost_basis = "pi_reported_partial"
+        else:
+            cost_basis = "pi_reported"
     else:
         cost_usd = None
         p_in = pricing.usd_per_input_token
@@ -1207,6 +1288,11 @@ def parse_pi_usage(stdout: str, stderr: str, pricing: Pricing) -> Usage:
                 + cache_write * p_cache_write
                 + out_tok * p_out
             )
+        if cost_usd is not None:
+            cost_basis = "configured_rates"
+        else:
+            cost_basis = "none"
+            _reason("no_configured_rates")
 
     seconds = None
     if len(timestamps) >= 2:
@@ -1219,7 +1305,81 @@ def parse_pi_usage(stdout: str, stderr: str, pricing: Pricing) -> Usage:
         cached_input_tokens=(cache_read + cache_write) or None,
         output_tokens=out_tok or None,
         seconds=seconds,
+        usage_events=_pi_usage_events(cost_basis, events, reasons),
     )
+
+
+def _pi_usage_events(cost_basis: str, events: list[dict], reasons: list[str]) -> dict:
+    """Assemble the ``usage_events`` block: complete only with no reason at all
+    (every record from a usage-bearing turn_end with a pi-reported cost and
+    provenance, and cost_usd taken from that reported cost)."""
+    complete = not reasons and cost_basis == "pi_reported"
+    return {
+        "source": "pi_json",
+        "cost_basis": cost_basis,
+        "completeness": "complete" if complete else "partial",
+        "partial_reasons": list(reasons),
+        "events": events,
+    }
+
+
+# Cost-basis values for results[].usage_events.cost_basis, best first. Anything
+# other than "pi_reported" means usage.cost_usd was NOT taken wholly from the
+# cost pi reported on every turn_end, and partial_reasons says why.
+_PI_COST_BASES = (
+    "pi_reported",            # every turn_end carried a pi-reported cost
+    "pi_reported_partial",    # pi-reported cost summed, but >= 1 turn had none
+    "pi_reported_agent_end",  # no turn_end; cost summed from agent_end messages
+    "configured_rates",       # cost computed from the config's per-token rates
+    "none",                   # no cost could be determined (cost_usd is null)
+)
+
+
+def merge_usage_events(blocks: list[dict]) -> dict | None:
+    """Combine the per-phase ``usage_events`` blocks of one run into one block.
+
+    A vibe run has a single phase, whose block is returned unchanged. A
+    spec-driven run has several, and ``RunResult.cost_usd`` is the sum across
+    them, so their events are concatenated in phase order with ``seq``
+    renumbered run-wide (and any ``:<seq>`` reason suffix shifted to match).
+    The run is ``complete`` only when every phase is; its cost basis is the
+    weakest of the phases' bases.
+    """
+    blocks = [b for b in blocks if isinstance(b, dict)]
+    if not blocks:
+        return None
+    if len(blocks) == 1:
+        return blocks[0]
+    events: list[dict] = []
+    reasons: list[str] = []
+    bases: list[str] = []
+    offset = 0
+    for b in blocks:
+        evs = [e for e in (b.get("events") or []) if isinstance(e, dict)]
+        for e in evs:
+            e2 = dict(e)
+            e2["seq"] = offset + int(e.get("seq") or 0)
+            events.append(e2)
+        for r in b.get("partial_reasons") or []:
+            code, sep, num = str(r).rpartition(":")
+            if sep and num.isdigit():
+                r = f"{code}:{offset + int(num)}"
+            if r not in reasons:
+                reasons.append(r)
+        basis_b = b.get("cost_basis")
+        bases.append(basis_b if isinstance(basis_b, str) and basis_b in _PI_COST_BASES else "none")
+        offset += len(evs)
+    basis = max(bases, key=_PI_COST_BASES.index)
+    complete = all(b.get("completeness") == "complete" for b in blocks)
+    if not complete and not reasons:
+        reasons.append("phase_partial")
+    return {
+        "source": "pi_json",
+        "cost_basis": basis,
+        "completeness": "complete" if complete else "partial",
+        "partial_reasons": [] if complete else reasons,
+        "events": events,
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -99,3 +99,100 @@ def test_json_report_round_trips_through_report(tmp_path):
     data = json.loads(json_path.read_text())
     assert data["mode"] == "model-compare"
     assert len(data["results"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# usage_events back-compat (issue #21)
+# ---------------------------------------------------------------------------
+
+# Every key results[].usage carried before usage_events existed, and its type
+# for a populated pi_json result. 4.1: none of these may change.
+_PRE_CHANGE_USAGE_TYPES = {
+    "cost_usd": float, "input_tokens": int, "cached_input_tokens": int,
+    "output_tokens": int, "reasoning_output_tokens": type(None),
+    "cli_reported_seconds": float, "wall_clock_seconds": float,
+    "raw_credits": type(None), "premium_requests": type(None),
+    "total_credits": float, "native_credits": type(None), "cost_per_pass": float,
+    "credits_per_pass": float,
+}
+
+# A results JSON as written by the code BEFORE this change: no usage_events.
+_PRE_CHANGE_REPORT = {
+    "run_id": "20260101_000000_pre", "mode": "cli-compare",
+    "comparison_label": "pi before usage_events",
+    "started_at": "2026-01-01T00:00:00+00:00", "finished_at": "2026-01-01T00:01:00+00:00",
+    "summary": {},
+    "results": [{
+        "task_id": "task-001", "target": "pi", "repeat": 1, "mode": "vibe",
+        "status": "passed", "started_at": "2026-01-01T00:00:00+00:00",
+        "finished_at": "2026-01-01T00:00:30+00:00", "duration_seconds": 30.0,
+        "scores": {"functional": 1.0, "spec_artifact": 0.0, "task_completion": 0.0,
+                   "steering_adherence": 0.0, "final": 0.0},
+        "usage": {"cost_usd": 0.028, "input_tokens": 13119, "cached_input_tokens": 13115,
+                  "output_tokens": 86, "reasoning_output_tokens": None,
+                  "cli_reported_seconds": 1.0, "wall_clock_seconds": 30.0,
+                  "raw_credits": None, "premium_requests": None, "total_credits": 0.0,
+                  "native_credits": None, "cost_per_pass": 0.028, "credits_per_pass": 0.0},
+        "functional_result": {"passed": True, "exit_code": 0, "score": 1.0, "checkpoints": {},
+                              "summary": "ok", "stdout": "", "stderr": ""},
+        "spec_artifact_scores": None, "phase_results": [],
+        "transcript": {"stdout": "", "stderr": ""},
+        "error_message": None, "workspace_path": None,
+    }],
+}
+
+
+def _pi_cli_run(with_events: bool):
+    run = _cli_run()
+    r = run.results[0]
+    r.target = "pi"
+    r.cost_usd = 0.028
+    r.input_tokens, r.cached_input_tokens, r.output_tokens = 13119, 13115, 86
+    r.raw_credits = None
+    if with_events:
+        r.usage_events = {
+            "source": "pi_json", "cost_basis": "pi_reported", "completeness": "complete",
+            "partial_reasons": [],
+            "events": [{"seq": 0, "source": "turn_end", "provider": "amazon-bedrock",
+                        "model": "m", "input": 4, "output": 86, "cache_read": 6512,
+                        "cache_write": 6603, "cost_total": 0.028}],
+        }
+    return run
+
+
+def _types(d):
+    return {k: type(v) for k, v in d.items()}
+
+
+def test_usage_events_compat_existing_keys_and_types_unchanged(tmp_path):
+    before = json.loads(JSONReporter(tmp_path / "a").write(_pi_cli_run(False)).read_text())
+    after = json.loads(JSONReporter(tmp_path / "b").write(_pi_cli_run(True)).read_text())
+    r_after = after["results"][0]
+    assert _types(r_after["usage"]) == _PRE_CHANGE_USAGE_TYPES
+    assert _types(r_after["usage"]) == _types(before["results"][0]["usage"])
+    assert set(after["summary"]) == set(before["summary"])
+    for k in after["summary"]:
+        assert type(after["summary"][k]) is type(before["summary"][k])
+    assert set(r_after) - set(before["results"][0]) == {"usage_events"}
+    assert r_after["usage_events"]["events"][0]["cache_write"] == 6603
+    # The non-pi result (claude-code) carries no new key.
+    assert "usage_events" not in after["results"][1]
+    assert set(after["results"][1]) == set(before["results"][1])
+
+
+def test_usage_events_compat_pre_change_report_loads_via_report_command(tmp_path):
+    from click.testing import CliRunner
+
+    from agent_cost_bench.cli import main
+
+    for name, payload in (("pre.json", _PRE_CHANGE_REPORT), ("post.json", None)):
+        if payload is None:
+            src = JSONReporter(tmp_path / "w").write(_pi_cli_run(True))
+            payload = json.loads(src.read_text())
+            assert "usage_events" in payload["results"][0]
+        path = tmp_path / name
+        path.write_text(json.dumps(payload))
+        out = tmp_path / f"out-{name}"
+        result = CliRunner().invoke(main, ["report", str(path), "-o", str(out), "--no-open"])
+        assert result.exit_code == 0, result.output
+        assert any(p.suffix == ".html" for p in out.iterdir())

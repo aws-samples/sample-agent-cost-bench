@@ -222,3 +222,51 @@ def test_clean_successful_run_is_not_transient():
         stdout='{"type":"turn.completed","usage":{"input_tokens":10}}',
     )
     assert p.transient_error is False
+
+
+def test_usage_events_compat_to_dict_emits_key_only_when_set():
+    from agent_cost_bench.models import RunResult, TaskStatus, Usage
+
+    r = RunResult(task_id="t", target="x", mode=TaskMode.VIBE, status=TaskStatus.PASSED)
+    assert "usage_events" not in r.to_dict()
+    assert Usage().usage_events is None
+    assert PhaseResult(phase="vibe", success=True, duration_seconds=0.0).usage_events is None
+    block = {"source": "pi_json", "cost_basis": "none", "completeness": "partial",
+             "partial_reasons": ["no_usage_in_stream"], "events": []}
+    r.usage_events = block
+    d = r.to_dict()
+    assert d["usage_events"] == block
+    assert "usage_events" not in d["usage"]
+
+
+def test_usage_events_compat_runner_carries_and_merges_phase_blocks():
+    from agent_cost_bench.models import RunResult, TaskStatus
+    from agent_cost_bench.runner import BenchmarkRunner
+
+    def blk(basis, complete, reasons, n):
+        return {"source": "pi_json", "cost_basis": basis,
+                "completeness": "complete" if complete else "partial",
+                "partial_reasons": reasons,
+                "events": [{"seq": i, "source": "turn_end", "provider": "p", "model": "m",
+                            "input": 1, "output": 1, "cache_read": 0, "cache_write": 0,
+                            "cost_total": 0.1 if basis == "pi_reported" else None}
+                           for i in range(n)]}
+
+    def run(phases):
+        r = RunResult(task_id="t", target="x", mode=TaskMode.VIBE, status=TaskStatus.PASSED)
+        BenchmarkRunner._aggregate_usage(r, phases)
+        return r
+
+    one = blk("pi_reported", True, [], 2)
+    assert run([PhaseResult("vibe", True, 0.0, usage_events=one)]).usage_events == one
+    assert run([PhaseResult("vibe", True, 0.0)]).usage_events is None
+
+    merged = run([
+        PhaseResult("requirements", True, 0.0, usage_events=blk("pi_reported", True, [], 2)),
+        PhaseResult("design", True, 0.0,
+                    usage_events=blk("none", False, ["turn_missing_cost:0"], 1)),
+    ]).usage_events
+    assert [e["seq"] for e in merged["events"]] == [0, 1, 2]
+    assert merged["cost_basis"] == "none"
+    assert merged["completeness"] == "partial"
+    assert merged["partial_reasons"] == ["turn_missing_cost:2"]

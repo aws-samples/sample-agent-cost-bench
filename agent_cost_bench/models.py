@@ -227,6 +227,9 @@ class Usage:
     # Native units, kept for side-by-side reporting
     raw_credits: float | None = None
     premium_requests: float | None = None
+    # Per-turn usage provenance (pi_json only; None for every other cost source).
+    # Shape: {source, cost_basis, completeness, partial_reasons, events: [...]}.
+    usage_events: dict | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -923,6 +926,7 @@ class PhaseResult:
     reasoning_output_tokens: int | None = None      # Codex o-series reasoning tokens
     premium_requests: float | None = None
     cli_reported_seconds: float | None = None
+    usage_events: dict | None = None                # per-turn provenance (pi_json only)
 
     transient_retries: int = 0
 
@@ -1008,6 +1012,9 @@ class RunResult:
     premium_requests: float | None = None
     # Aggregated native credits for model-compare (sum across phases).
     total_credits: float = 0.0
+    # Per-turn usage provenance (pi_json only). Emitted as results[].usage_events
+    # only when set, so other cost sources and older reports are unchanged.
+    usage_events: dict | None = None
 
     # Sub-results
     functional_result: FunctionalTestResult | None = None
@@ -1038,6 +1045,12 @@ class RunResult:
         return None
 
     def to_dict(self) -> dict[str, Any]:
+        d = self._base_dict()
+        if self.usage_events is not None:
+            d["usage_events"] = self.usage_events
+        return d
+
+    def _base_dict(self) -> dict[str, Any]:
         return {
             "task_id": self.task_id,
             "target": self.target,

@@ -48,6 +48,7 @@ from .models import (
 )
 from .preflight import check_targets_available, docker_report, repo_report, validate_models
 from .sandbox import Workspace
+from .usage import merge_usage_events
 
 _IS_TTY = (
     sys.stdout.isatty()
@@ -568,6 +569,9 @@ class BenchmarkRunner:
         result.output_tokens = sum(out_vals) if out_vals else None
         result.cached_input_tokens = sum(cached_vals) if cached_vals else None
         result.reasoning_output_tokens = sum(reason_vals) if reason_vals else None
+
+        event_vals = [p.usage_events for p in phases if p.usage_events is not None]
+        result.usage_events = merge_usage_events(event_vals) if event_vals else None
 
         result.cli_reported_seconds = sum(
             p.cli_reported_seconds for p in phases if p.cli_reported_seconds is not None
