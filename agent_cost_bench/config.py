@@ -74,6 +74,8 @@ _PASSTHROUGH = {
     "effort",
     "concurrency",
     "max_concurrency",
+    "concurrency_per_target",
+    "image_build_workers",
     "tasks_dir",
     "task_ids",
     "timeout_minutes",
@@ -295,13 +297,13 @@ def materialize_task_sources(config: BenchConfig) -> Path | None:
             continue
 
         # Determine which tasks to import. An explicit `tasks:` filter always
-        # wins. Otherwise, for a terminal-bench source, default to the
-        # empirically-confirmed harness-compatible allowlist so a default run
-        # (no tasks: given) runs only tasks this host-agent harness can grade,
-        # instead of the full suite where most tasks fail structurally.
+        # wins. Otherwise, for a terminal-bench source, default to the built-in
+        # Terminal-Bench 4.x task set so a default run (no tasks: given) runs
+        # only tasks this host-agent harness can grade, instead of the full
+        # suite where many tasks fail structurally.
         only = src.tasks or None
         used_default_allowlist = False
-        if only is None and src.type.strip().lower() in ("terminal-bench", "terminal-bench-2", "tb"):
+        if only is None and src.type.strip().lower() in ("terminal-bench", "tb"):
             from .importers.terminal_bench import terminal_bench_supported_tasks
 
             only = list(terminal_bench_supported_tasks())
@@ -370,7 +372,7 @@ def discover_tasks(config: BenchConfig) -> list[TaskConfig]:
     Load all task.yaml files from the active task root and apply task-id and
     mode filters. cli-compare silently skips spec-driven tasks (it is vibe-only).
 
-    When ``task_sources`` are configured (e.g. Terminal-Bench 2.1), they are
+    When ``task_sources`` are configured (e.g. Terminal-Bench 4.x), they are
     converted to native fixtures and run *instead of* the repo's own ``tasks/``
     tree — configuring an external benchmark makes it the exclusive task set, so
     a Terminal-Bench run isn't diluted by this repo's sample tasks. Without any

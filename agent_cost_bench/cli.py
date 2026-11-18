@@ -490,7 +490,7 @@ def new_task(task_id, mode, tasks_dir, with_tests, repo):
 @main.command("import-tasks")
 @click.option(
     "--type", "source_type", required=True,
-    help="Task source type: terminal-bench (Terminal-Bench 2.x/Harbor).",
+    help="Task source type: terminal-bench (Terminal-Bench 4.x/Harbor).",
 )
 @click.option(
     "--path", "source_path", required=True, type=click.Path(exists=True),
@@ -513,14 +513,14 @@ def new_task(task_id, mode, tasks_dir, with_tests, repo):
 @click.option("--build", "build_images", is_flag=True, default=False,
               help="Build the Docker image for each imported task that ships a Dockerfile.")
 def import_tasks(source_type, source_path, dest_root, only, mode, no_overwrite, build_images):
-    """Convert Terminal-Bench 2.1 tasks into native fixtures.
+    """Convert Terminal-Bench 4.x tasks into native fixtures.
 
     Examples:
 
       agent-cost-bench import-tasks --type terminal-bench --path ~/terminal-bench/tasks
 
       agent-cost-bench import-tasks --type terminal-bench --path ~/tb/tasks \\
-          --task hello-world --task fix-permissions
+          --task html-js-filter --task sound-change-cascade
 
       agent-cost-bench import-tasks --type terminal-bench --path ~/tb/tasks --into tasks
     """

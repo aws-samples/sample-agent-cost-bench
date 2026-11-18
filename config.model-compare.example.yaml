@@ -60,19 +60,19 @@ tasks_dir: tasks
 task_ids: 
 modes: ["vibe"]   # run only spec-driven tasks; use [vibe] or [vibe, spec-driven] otherwise
 
-# Bring your own tasks: Terminal-Bench (optional). Import Terminal-Bench 2.x
-# tasks and run your models against them alongside the native tasks. `path` may
+# Bring your own tasks: Terminal-Bench 4.x (optional). Import Terminal-Bench 4.x
+# tasks and run your models against them instead of the native tasks. `path` may
 # be a git URL (cloned + cached automatically) or a local checkout. Imported ids
-# are prefixed `terminal-bench-<name>`. These are container-graded vibe tasks, so
-# the source benchmark's Docker image must be available (auto-pulled/built). With
-# no `tasks:` filter, a curated harness-compatible default set runs. See the
-# README section "Bring your own tasks (Terminal-Bench 2.1)".
+# are prefixed `terminal-bench-<name>`. Each task is graded in its own verifier
+# image, built automatically. With no `tasks:` filter, a default set of 25 tasks
+# runs. See the README section "Terminal-Bench 4.x".
 # task_sources:
 #   - type: terminal-bench
-#     path: https://github.com/laude-institute/terminal-bench
-#     ref: main
+#     path: https://github.com/harbor-framework/terminal-bench.git
+#     ref: v4.1.0
 #     subdir: tasks
-#     # tasks: [chess-best-move]    # optional name filter (omit = curated default)
+#     timeout_minutes: 60
+#     # tasks: [html-js-filter]     # optional name filter (omit = default set)
 # task_ids: [fizzbuzz, todo-api, pricing-engine]
 # To benchmark the LLM-as-judge rubric path (no hidden tests needed), include:
 # task_ids: [note-cli]

@@ -51,8 +51,15 @@ class CLITimeoutError(TimeoutError):
 
 
 # Cap on captured bytes per stream so a CLI stuck in a redraw loop can't exhaust
-# memory. Excess is dropped but the process is still drained so it never blocks.
+# memory. The first _MAX_CAPTURE bytes and the last _TAIL_CAPTURE bytes are
+# kept; only the middle is dropped. The tail matters: stream-json CLIs (Kiro)
+# print their completion and credit events last, so a long session that only
+# kept the head lost its cost. The process is always drained to EOF.
 _MAX_CAPTURE = 5_000_000
+_TAIL_CAPTURE = 2_000_000
+# After the CLI exits, how long to wait for its output pipes to close before
+# stopping processes it left behind (see _finish_streams).
+_DRAIN_GRACE_SECONDS = 10.0
 
 # CLIs that select the reasoning effort by suffixing the model slug instead of
 # taking a separate --effort flag (Cursor: "claude-opus-4-8-high", Devin:
@@ -75,22 +82,115 @@ _EFFORT_SLUG_SUFFIXES = (
 )
 
 
+class _Capture:
+    """Bounded output capture that keeps the head and the tail of a stream.
+
+    Up to ``_MAX_CAPTURE`` bytes from the start are kept, then a rolling window
+    of the last ``_TAIL_CAPTURE`` bytes. When bytes in between are dropped, the
+    tail is trimmed to start at a line boundary and a marker line notes how
+    much was omitted, so line-oriented parsers (JSON Lines) still see whole
+    lines at the end."""
+
+    def __init__(self) -> None:
+        self.head: list[bytes] = []
+        self.head_size = 0
+        self.tail = bytearray()
+        self.dropped = 0
+
+    def add(self, chunk: bytes) -> None:
+        room = _MAX_CAPTURE - self.head_size
+        if room > 0:
+            part = chunk[:room]
+            self.head.append(part)
+            self.head_size += len(part)
+            chunk = chunk[room:]
+            if not chunk:
+                return
+        self.tail.extend(chunk)
+        excess = len(self.tail) - _TAIL_CAPTURE
+        if excess > 0:
+            del self.tail[:excess]
+            self.dropped += excess
+
+    def value(self) -> bytes:
+        tail = bytes(self.tail)
+        if not self.dropped:
+            return b"".join(self.head) + tail
+        nl = tail.find(b"\n")
+        dropped = self.dropped
+        if nl >= 0:
+            dropped += nl + 1
+            tail = tail[nl + 1:]
+        marker = f"\n[agent-cost-bench: {dropped} bytes of output omitted]\n".encode()
+        return b"".join(self.head) + marker + tail
+
+
 async def _read_stream(stream: asyncio.StreamReader | None, buf: list[bytes]) -> None:
-    """Drain a stream into ``buf`` (capped). Always reads to EOF so the child
-    never blocks on a full pipe."""
+    """Drain a stream into ``buf`` (head and tail kept, see :class:`_Capture`).
+    Always reads to EOF so the child never blocks on a full pipe."""
     if stream is None:
         return
-    total = 0
-    while True:
-        try:
-            chunk = await stream.read(65536)
-        except Exception:
-            break
-        if not chunk:
-            break
-        if total < _MAX_CAPTURE:
-            buf.append(chunk)
-            total += len(chunk)
+    cap = _Capture()
+    try:
+        while True:
+            try:
+                chunk = await stream.read(65536)
+            except Exception:
+                break
+            if not chunk:
+                break
+            cap.add(chunk)
+    finally:
+        # Publish what was read even if this reader is cancelled.
+        buf[:] = [cap.value()]
+
+
+async def _wait_exit(proc: asyncio.subprocess.Process) -> int:
+    """Wait for the CLI process itself to exit.
+
+    ``Process.wait()`` only returns once every pipe to the child is closed, so
+    a background process the agent started (which inherited stdout) would make
+    a CLI that already exited look like it was still running until the task
+    timeout. ``returncode`` is set as soon as the process exits."""
+    while proc.returncode is None:
+        await asyncio.sleep(0.2)
+    return proc.returncode
+
+
+def _signal_group(pgid: int, sig: int) -> bool:
+    """Send ``sig`` to a process group. False when the group no longer exists."""
+    try:
+        os.killpg(pgid, sig)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+async def _finish_streams(proc: asyncio.subprocess.Process, readers: list[asyncio.Task]) -> bool:
+    """Wait for the output readers after the CLI has exited, and stop any
+    processes it left behind in its process group.
+
+    Background processes an agent starts (dev servers, solvers, test runners)
+    can outlive the CLI. They keep using CPU, which skews other runs on the
+    host, and if they inherited the CLI's stdout/stderr the readers never see
+    EOF, which held a whole run for 40 minutes. The CLI runs in its own session
+    (``start_new_session=True``), so its group id is its pid.
+
+    Returns True when leftover processes had to be stopped.
+    """
+    pgid = proc.pid
+    _done, pending = await asyncio.wait(readers, timeout=_DRAIN_GRACE_SECONDS)
+    found = _signal_group(pgid, signal.SIGTERM)
+    if pending:
+        _done, pending = await asyncio.wait(pending, timeout=5.0)
+    if pending and _signal_group(pgid, signal.SIGKILL):
+        _done, pending = await asyncio.wait(pending, timeout=5.0)
+    for t in pending:
+        # A process outside the group (it called setsid) still holds the pipe.
+        t.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+    return found
 
 
 def _describe_exit(exit_code: int) -> str:
@@ -312,7 +412,7 @@ class BaseExecutor:
         master_file = os.fdopen(master_fd, "rb", buffering=0)
         transport, _ = await loop.connect_read_pipe(lambda: protocol, master_file)
 
-        captured = bytearray()
+        captured = _Capture()
 
         async def _drain() -> None:
             while True:
@@ -322,8 +422,7 @@ class BaseExecutor:
                     break  # pty master raises EIO on slave close — that's EOF
                 if not chunk:
                     break
-                if len(captured) < _MAX_CAPTURE:
-                    captured.extend(chunk)
+                captured.add(chunk)
 
         drain_task = asyncio.create_task(_drain())
 
@@ -341,6 +440,9 @@ class BaseExecutor:
             timed_out = True
             await _terminate_process_tree(proc)
         finally:
+            # Read what's left, then stop processes the CLI left running.
+            await asyncio.wait([drain_task], timeout=_DRAIN_GRACE_SECONDS)
+            _signal_group(proc.pid, signal.SIGTERM)
             try:
                 transport.close()
             except Exception:
@@ -348,7 +450,7 @@ class BaseExecutor:
             await asyncio.gather(drain_task, return_exceptions=True)
 
         exit_code = proc.returncode if proc.returncode is not None else -1
-        output = bytes(captured).decode("utf-8", errors="replace")
+        output = captured.value().decode("utf-8", errors="replace")
         return exit_code, output, timed_out
 
     async def run_cli_turn(
@@ -465,11 +567,12 @@ class BaseExecutor:
             err_task = asyncio.create_task(_read_stream(proc.stderr, err_buf))
 
             try:
-                await asyncio.wait_for(proc.wait(), timeout=float(timeout))
+                await asyncio.wait_for(_wait_exit(proc), timeout=float(timeout))
             except asyncio.TimeoutError:
                 await _terminate_process_tree(proc)
-                # Let the readers drain whatever was buffered before the kill.
-                await asyncio.gather(out_task, err_task, return_exceptions=True)
+                # Let the readers drain whatever was buffered before the kill,
+                # without waiting forever on a pipe a stray process still holds.
+                await _finish_streams(proc, [out_task, err_task])
                 partial_out = b"".join(out_buf).decode("utf-8", errors="replace")
                 partial_err = b"".join(err_buf).decode("utf-8", errors="replace")
                 if self._logger:
@@ -491,11 +594,16 @@ class BaseExecutor:
                     stderr=partial_err,
                 )
 
-            await asyncio.gather(out_task, err_task, return_exceptions=True)
+            wall = _time.monotonic() - start
+            stopped_leftovers = await _finish_streams(proc, [out_task, err_task])
             exit_code = proc.returncode or 0
             stdout = b"".join(out_buf).decode("utf-8", errors="replace")
             stderr = b"".join(err_buf).decode("utf-8", errors="replace")
-            wall = _time.monotonic() - start
+            if self._logger and stopped_leftovers:
+                await self._logger.log_event(
+                    f"LEFTOVER PROCESSES  {self.task.id}  target={self.target.label}  "
+                    f"stopped processes the CLI left running after it exited"
+                )
 
             if self._logger and exit_code != 0:
                 produced = bool(stdout.strip())

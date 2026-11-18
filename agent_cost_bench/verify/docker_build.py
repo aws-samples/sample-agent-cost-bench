@@ -105,8 +105,12 @@ def ensure_image(
     *,
     timeout_seconds: int = 1800,
     log=None,
+    platform: str | None = None,
 ) -> BuildResult:
     """Ensure ``image`` exists, building it from ``context_dir`` if missing.
+
+    ``platform`` (e.g. ``"linux/amd64"``) builds for that architecture; Docker
+    emulates it on a host with a different CPU.
 
     Returns a :class:`BuildResult`. ``ok`` is True when the image is present
     afterwards (already there, or built successfully). Never raises for an
@@ -140,7 +144,10 @@ def ensure_image(
     _log(f"building image {image} from {context_dir} …")
     # Security: runtime resolved from PATH; flags are static; `image` and the
     # context path come from operator-owned task fixtures. Array exec, no shell.
-    cmd = [runtime, "build", "-t", image, str(context_dir)]
+    cmd = [runtime, "build", "-t", image]
+    if platform:
+        cmd += ["--platform", platform]
+    cmd.append(str(context_dir))
     try:
         proc = subprocess.run(  # noqa: S603
             cmd, capture_output=True, text=True, timeout=timeout_seconds

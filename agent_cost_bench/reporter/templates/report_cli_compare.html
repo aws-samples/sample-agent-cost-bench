@@ -97,7 +97,50 @@
   </table>
   {% endif %}
 
+  <h2>Results by Task</h2>
+  <p class="hint" style="margin:0 0 10px;">One row per task, one column per CLI.
+     <span class="sym pass">✓</span> passed · <span class="sym fail">✗</span> failed ·
+     <span class="sym timeout">⏱</span> timeout · <span class="sym error">!</span> error ·
+     <span class="sym unavailable">–</span> unavailable (not counted).
+     The number is checks passed; below it, cost and time. Hover for the status, click to jump to the run's details.
+     {% if task_matrix.prefix %}Task names omit the shared prefix <code>{{ task_matrix.prefix }}</code>.{% endif %}</p>
+  <div class="matrix-wrap">
+  <table class="matrix">
+    <thead><tr>
+      <th class="task">Task</th>
+      <th class="outcome">Passed by</th>
+      {% for t in matrix_targets %}<th class="cli">{{ t }}</th>{% endfor %}
+    </tr></thead>
+    <tbody>
+    {% for m in task_matrix.rows %}
+      <tr class="outcome-{{ m.outcome_class }}">
+        <td class="task" title="{{ m.task_id }}">{{ m.short_name }}</td>
+        <td class="outcome"><span class="badge {{ m.outcome_class }}" title="{{ m.outcome_title }}">{{ m.outcome }}</span></td>
+        {% for c in m.cells %}
+        <td class="cli">
+          {% if c %}
+          <a class="cell" href="#{{ c.anchor }}" title="{{ c.title }}">
+            <span class="badge {{ c.status_class }}"><span class="sym">{{ c.symbol }}</span> {{ c.label }}</span>
+            <span class="meta">{% if c.cost_usd is not none %}<span class="cost">${{ "%.2f"|format(c.cost_usd) }}</span> · {% endif %}{{ "%.0f"|format(c.cli_time) }}s</span>
+          </a>
+          {% else %}<span class="na">not run</span>{% endif %}
+        </td>
+        {% endfor %}
+      </tr>
+    {% endfor %}
+    </tbody>
+    <tfoot><tr>
+      <td class="task">Tasks passed</td>
+      <td class="outcome"></td>
+      {% for f in task_matrix.footer %}
+      <td class="cli"><b>{{ f.passed }}/{{ f.scored }}</b>{% if f.cost is not none %}<br><span class="meta"><span class="cost">${{ "%.2f"|format(f.cost) }}</span> total</span>{% endif %}</td>
+      {% endfor %}
+    </tr></tfoot>
+  </table>
+  </div>
+
   <h2>Detailed Results</h2>
+  <p class="hint" style="margin:0 0 10px;">Grouped by task. Expand a row for its failed checks, grader output and CLI transcript.</p>
   <table>
     <thead><tr>
       <th>Task</th><th>CLI</th>{% if repeats > 1 %}<th class="num">#</th>{% endif %}
@@ -106,20 +149,20 @@
     </tr></thead>
     <tbody>
     {% for r in result_rows %}
-      <tr>
-        <td>{{ r.task_id }}</td>
+      <tr id="{{ r.anchor }}" class="{{ 'task-start' if r.first_of_task else 'task-cont' }}">
+        <td>{% if r.first_of_task %}<b>{{ r.task_id }}</b>{% else %}<span class="same-task">↳</span>{% endif %}</td>
         <td>{{ r.target }}</td>
         {% if repeats > 1 %}<td class="num">{{ r.repeat }}</td>{% endif %}
-        <td><span class="badge {{ r.status_class }}">{{ r.status }}</span></td>
+        <td><span class="badge {{ r.status_class }}">{{ r.status }}</span>{% if r.checks %} <span class="checks">{{ r.checks }}</span>{% endif %}</td>
         <td class="num">{{ "%.0f%%"|format(r.functional_score * 100) }}</td>
         <td class="num cost">{% if r.cost_usd is not none %}${{ "%.4f"|format(r.cost_usd) }}{% else %}—{% endif %}</td>
         <td class="num">{% if r.credits is not none %}{{ "%.3f"|format(r.credits) }}{% else %}—{% endif %}</td>
         <td class="num">{% if r.input_tokens is not none %}{{ r.input_tokens }}/{{ r.output_tokens }}{% else %}—{% endif %}</td>
         <td class="num">{{ "%.1f"|format(r.cli_time) }}s</td>
       </tr>
-      <tr><td colspan="{{ 9 if repeats > 1 else 8 }}" style="padding:0;border:none;">
+      <tr class="detail-row"><td colspan="{{ 9 if repeats > 1 else 8 }}" style="padding:0 0 6px;">
         <details>
-          <summary>{{ r.functional_summary or "details" }}{% if r.error_message %} — {{ r.error_message }}{% endif %}</summary>
+          <summary><b>{{ r.target }}</b> · {{ r.functional_summary or "details" }}{% if r.error_message %} — {{ r.error_message }}{% endif %}</summary>
           <pre>
 {%- if r.error_message %}
 ERROR: {{ r.error_message }}
@@ -134,7 +177,8 @@ ERROR: {{ r.error_message }}
 {%- endfor %}
 {%- elif not val.passed and val.failed is defined and val.failed %}
 {%- for t in val.failed %}
-      ✗ {{ t | replace('test_', '', 1) | replace('_', ' ') }}
+{%- set parts = t.split(': ', 1) %}
+      ✗ {{ parts[0] | replace('test_', '', 1) | replace('_', ' ') }}{% if parts | length > 1 %}: {{ parts[1] }}{% endif %}
 {%- endfor %}
 {%- endif %}
 {%- else %}

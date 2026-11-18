@@ -147,3 +147,19 @@ def test_shipped_devin_policy_allows_venv_interpreters():
         for tool in ("python", "pip", "pytest"):
             rule = f"Exec({prefix}{tool})"
             assert rule in allow, f"shipped policy no longer allows {rule}"
+
+
+def test_devin_policy_only_for_devin_targets(tmp_path, vibe_task):
+    """Other CLIs read workspace files for context, so the Devin policy is only
+    written into Devin's workspaces when the target is known."""
+    from agent_cost_bench.targets import make_cli_target
+
+    cfg = _cfg(tmp_path, devin_permissions_file=_write_policy(tmp_path))
+    kiro = make_cli_target({"name": "kiro", "cli_path": "kiro-cli", "model_id": "m"})
+    devin = make_cli_target({"name": "devin", "cli_path": "devin", "model_id": "m"})
+    ws_kiro = Workspace("run-kiro", vibe_task, cfg, target=kiro)
+    ws_kiro.setup()
+    assert not ws_kiro.devin_dir.exists()
+    ws_devin = Workspace("run-devin", vibe_task, cfg, target=devin)
+    ws_devin.setup()
+    assert (ws_devin.devin_dir / "config.json").is_file()

@@ -380,6 +380,8 @@ def unsupported_runtime_report(tasks) -> dict:
         image = getattr(spec, "image", None) if spec else None
         if not image:
             continue
+        if getattr(spec, "dedicated_image", False):
+            continue  # grading-only image: its author validated the grader there
         required = _scan_required_runtimes(t)
         if not required:
             continue

@@ -14,9 +14,9 @@ Built-in parsers:
   tap           — Test Anything Protocol on stdout
   regex         — custom regex with named groups (passed/total or passed/failed)
   exit-code     — binary: exit 0 => 1/1, else 0/1
-  reward-file   — Harbor / Terminal-Bench 2.x: a reward.txt written by the task's
-                  own verifier (a float in [0,1], or an int pass/total pair).
-                  Used by imported Terminal-Bench 2.1 tasks.
+  reward-file   — Harbor / Terminal-Bench: a reward.txt or reward.json written by
+                  the task's own verifier (a float in [0,1], or an int pass/total
+                  pair). Used by imported Terminal-Bench 4.x tasks.
 """
 
 from __future__ import annotations
@@ -35,6 +35,9 @@ class ParseResult:
     ran: bool = False          # did the suite actually execute / produce results
     detail: str = ""
     failed_names: list[str] = field(default_factory=list)
+    # Human-readable per-check summary (e.g. "11/13 checks passed") when the
+    # verifier reports individual checks separately from its score.
+    checks_detail: str = ""
 
     @property
     def score(self) -> float:
@@ -169,8 +172,93 @@ def parse_exit_code(results_dir, stdout, stderr, exit_code, spec) -> ParseResult
                        detail="exit 0" if ok else f"exit {exit_code}")
 
 
+_MAX_FAILED_CHECKS = 25
+_MAX_CHECK_MESSAGE = 300
+
+
+def _read_ctrf(results_dir: Path) -> tuple[int, int, list[str]] | None:
+    """Read a CTRF report (``ctrf.json``) written by a Harbor verifier.
+
+    Returns (passed, total, failed) where ``failed`` lists each failed check
+    as ``name: message``. Returns None when there is no readable report.
+    Skipped/pending checks count toward neither number.
+    """
+    for f in _glob_one(results_dir, "ctrf.json"):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8", errors="replace"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        results = data.get("results") if isinstance(data, dict) else None
+        tests = results.get("tests") if isinstance(results, dict) else None
+        if not isinstance(tests, list):
+            continue
+        passed = total = 0
+        failed: list[str] = []
+        for t in tests:
+            if not isinstance(t, dict):
+                continue
+            status = str(t.get("status", "")).lower()
+            if status in ("skipped", "pending"):
+                continue
+            total += 1
+            if status == "passed":
+                passed += 1
+                continue
+            name = str(t.get("name") or "?")
+            # pytest ids: drop the file part ("test_outputs.py::Class::test_x").
+            if "::" in name:
+                name = name.split("::", 1)[1]
+            msg = " ".join(str(t.get("message") or "").split())
+            # pytest-json-ctrf puts a generic message ("The test failed in the
+            # call phase ...") and the real assertion in `trace` as "E ..." lines.
+            e_lines = [
+                " ".join(line[1:].split())
+                for line in str(t.get("trace") or "").splitlines()
+                if line.startswith("E ") and line[1:].strip()
+            ]
+            if e_lines:
+                msg = " | ".join(e_lines[:2])
+            elif not msg:
+                msg = " ".join(str(t.get("trace") or "").split())
+            # Some graders repeat the check's label in the message; drop it once.
+            label = name.split(":", 1)[1].strip() if ":" in name else ""
+            if label and msg.startswith(label):
+                msg = msg[len(label):].lstrip(" :")
+            if len(msg) > _MAX_CHECK_MESSAGE:
+                msg = msg[:_MAX_CHECK_MESSAGE] + "…"
+            failed.append(f"{name}: {msg}" if msg else name)
+        return passed, total, failed[:_MAX_FAILED_CHECKS]
+    return None
+
+
+def _with_checks(pr: ParseResult, results_dir: Path) -> ParseResult:
+    """Add per-check results from ctrf.json to a reward-file result.
+
+    The score is unchanged: it stays the reward the verifier wrote. Only the
+    detail text and failed-check list are filled in, so a report can show
+    which checks failed and why.
+    """
+    ctrf = _read_ctrf(results_dir)
+    if ctrf is not None:
+        passed, total, failed = ctrf
+        pr.checks_detail = f"{passed}/{total} checks passed"
+        pr.detail = f"{pr.detail} · {pr.checks_detail}"
+        pr.failed_names = failed
+    elif pr.score < 1.0:
+        # No per-check report: the grader may have stopped before running any
+        # checks (e.g. a missing dependency), which is not a model verdict.
+        pr.checks_detail = "no per-check results written by the grader"
+        pr.detail = f"{pr.detail} · {pr.checks_detail}"
+    return pr
+
+
 def parse_reward_file(results_dir, stdout, stderr, exit_code, spec) -> ParseResult:
-    """Harbor / Terminal-Bench 2.x reward contract.
+    pr = _parse_reward_value(results_dir)
+    return _with_checks(pr, results_dir) if pr.ran else pr
+
+
+def _parse_reward_value(results_dir: Path) -> ParseResult:
+    """Harbor / Terminal-Bench reward contract.
 
     A task's own verifier writes a reward to a file (Harbor's convention is
     ``/logs/verifier/reward.txt``; the generic docker runner maps that to
@@ -183,6 +271,10 @@ def parse_reward_file(results_dir, stdout, stderr, exit_code, spec) -> ParseResu
     too: ``1`` → 1/1, ``0`` → 0/1. Missing/empty/unparseable file → not ran
     (treated as a build/verifier failure by the caller), so a task that never
     produced a reward never silently scores as a pass.
+
+    When the verifier also wrote a CTRF report (``ctrf.json``), the per-check
+    counts and failure messages are added to the result's detail text by
+    :func:`parse_reward_file`; the score still comes from the reward.
     """
     files = _glob_one(results_dir, "reward.txt", "reward", "*.reward", "reward.json")
     for f in files:

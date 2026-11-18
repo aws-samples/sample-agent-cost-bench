@@ -96,6 +96,7 @@ exit $ec
 
         cmd = [
             get_runtime(), "run", "--rm", f"--network={network}",
+            *(["--platform", spec.platform] if getattr(spec, "platform", None) else []),
             "-v", f"{src_dir}:{_CONTAINER_SRC}:ro",
             "-v", f"{results_dir}:{_CONTAINER_RESULTS}",
             "-e", f"SRC_RO={_CONTAINER_SRC}",
@@ -170,7 +171,10 @@ exit $ec
             score=pr.score,
             checkpoints={
                 "compiles": True,
-                "tests": {"passed": pr.passed, "total": pr.total, "failed": pr.failed_names},
+                "tests": {
+                    "passed": pr.passed, "total": pr.total, "failed": pr.failed_names,
+                    **({"detail": pr.checks_detail} if pr.checks_detail else {}),
+                },
             },
             summary=pr.detail,
             stdout=stdout, stderr=stderr, duration_seconds=duration,

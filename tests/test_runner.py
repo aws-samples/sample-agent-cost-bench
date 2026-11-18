@@ -193,3 +193,118 @@ def test_ensure_images_pulls_prebuilt_image(tmp_path, monkeypatch):
     # Pulled, never built — no build context means there's nothing to build.
     assert pulled == ["alexgshaw/adaptive-rejection-sampler:20251031"]
     assert built == []
+
+
+def _multi_task_tree(root, n: int) -> str:
+    for i in range(n):
+        td = root / "tasks" / "vibe" / f"t{i}"
+        td.mkdir(parents=True)
+        (td / "task.yaml").write_text(
+            f"id: t{i}\nmode: vibe\ndescription: d\ntimeout_minutes: 1\nprompt: do it\n"
+        )
+    return str(root / "tasks")
+
+
+def _lane_cfg(tmp_path, targets, tasks_dir, **kw) -> BenchConfig:
+    return BenchConfig(
+        mode=CompareMode.MODEL_COMPARE,
+        targets=targets,
+        tasks_dir=tasks_dir,
+        workspace_base=str(tmp_path / "ws"),
+        output_dir=str(tmp_path / "results"),
+        timeout_minutes=1,
+        open_report=False,
+        **kw,
+    )
+
+
+async def _record_schedule(runner, monkeypatch, delays: dict[str, float]):
+    """Replace _run_single with a fake that sleeps per target and records how
+    many jobs of each target run at the same time."""
+    import asyncio
+
+    from agent_cost_bench.models import RunResult, TaskMode
+
+    active: dict[str, int] = {}
+    peak: dict[str, int] = {}
+    order: list[str] = []
+
+    async def fake(task, target, repeat=1):
+        active[target.name] = active.get(target.name, 0) + 1
+        peak[target.name] = max(peak.get(target.name, 0), active[target.name])
+        order.append(f"{target.name}:{task.id}")
+        await asyncio.sleep(delays[target.name])
+        active[target.name] -= 1
+        return RunResult(task_id=task.id, target=target.label, mode=TaskMode.VIBE,
+                         status=TaskStatus.PASSED, repeat=repeat)
+
+    monkeypatch.setattr(runner, "_run_single", fake)
+    await runner.run()
+    return peak, order
+
+
+@pytest.mark.asyncio
+async def test_per_target_lanes_keep_fast_target_busy(tmp_path, monkeypatch):
+    """A slow target must not take the fast target's slot. With one shared
+    semaphore the fast target's later tasks waited behind the slow one."""
+    tasks_dir = _multi_task_tree(tmp_path, 4)
+    targets = [mock_target("fast"), mock_target("slow")]
+    runner = BenchmarkRunner(_lane_cfg(tmp_path, targets, tasks_dir))
+    peak, order = await _record_schedule(runner, monkeypatch, {"fast": 0.01, "slow": 0.2})
+    # Each target runs one job at a time…
+    assert peak == {"fast": 1, "slow": 1}
+    # …and the fast target finishes all 4 tasks before the slow one starts its 2nd.
+    assert order.index("slow:t1") > order.index("fast:t3")
+
+
+@pytest.mark.asyncio
+async def test_concurrency_per_target_allows_parallel_tasks(tmp_path, monkeypatch):
+    tasks_dir = _multi_task_tree(tmp_path, 4)
+    runner = BenchmarkRunner(
+        _lane_cfg(tmp_path, [mock_target("only")], tasks_dir, concurrency_per_target=3)
+    )
+    assert runner.config.effective_workers(4) == 3
+    peak, _ = await _record_schedule(runner, monkeypatch, {"only": 0.05})
+    assert peak == {"only": 3}
+
+
+def test_ensure_images_builds_in_parallel(tmp_path, monkeypatch):
+    """Several missing images are built concurrently, each exactly once."""
+    import threading
+    import time
+
+    from agent_cost_bench.models import TaskConfig, VerifySpec
+    from agent_cost_bench.verify import docker_build
+
+    lock = threading.Lock()
+    state = {"active": 0, "peak": 0, "built": []}
+
+    class _Res:
+        ok = True
+        built = True
+        detail = ""
+
+    def fake_ensure_image(image, context, **kw):
+        with lock:
+            state["active"] += 1
+            state["peak"] = max(state["peak"], state["active"])
+        time.sleep(0.1)
+        with lock:
+            state["active"] -= 1
+            state["built"].append(image)
+        return _Res()
+
+    monkeypatch.setattr(docker_build, "ensure_image", fake_ensure_image)
+    tasks = [
+        TaskConfig(
+            id=f"t{i}", prompt="p", task_dir=tmp_path,
+            verify=VerifySpec(image=f"img{i % 3}:x", build_context="ctx",
+                              test_cmd="true", parser="reward-file"),
+        )
+        for i in range(6)
+    ]
+    cfg = _cfg(tmp_path, [mock_target()], str(tmp_path / "tasks"))
+    cfg.image_build_workers = 3
+    BenchmarkRunner(cfg)._ensure_images(tasks)
+    assert sorted(state["built"]) == ["img0:x", "img1:x", "img2:x"]  # 3 unique images
+    assert state["peak"] == 3

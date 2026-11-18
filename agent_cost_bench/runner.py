@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import signal
+import subprocess
 import sys
 import time
 import uuid
@@ -115,6 +116,7 @@ class BenchmarkRunner:
 
         self._docker_preflight(tasks)
         self._repo_preflight(tasks)
+        self._prevent_idle_sleep()
 
         bench_run = BenchmarkRun(run_id=self.run_id, config=self.config)
         total = len(tasks) * len(targets) * repeats
@@ -131,14 +133,29 @@ class BenchmarkRunner:
             f"  Tasks: {len(tasks)}  ×  {unit}: {len(targets)}{repeat_note}  =  {total} runs\n"
             f"  {unit}: {', '.join(t.label for t in targets)}\n"
             f"  Concurrency: {self.config.effective_workers(len(tasks))} parallel run(s)"
-            f"  (strategy: {self.config.concurrency})\n"
+            f"  (strategy: {self.config.concurrency}"
+            + (
+                f", {self.config.concurrency_per_target} per {unit[:-1]}"
+                if self.config.concurrency == "per_target"
+                else ""
+            )
+            + ")\n"
         )
         await self._logger.log_event(
             f"run started ({self.config.mode.value}) — {len(tasks)} task(s) × "
             f"{len(targets)} target(s) × {repeats} repeat(s) = {total} runs"
         )
 
+        # Global cap on parallel runs. Under "per_target" each target also gets
+        # its own lane (concurrency_per_target slots), so a slow CLI's queued
+        # jobs never take a fast CLI's slot; with one shared semaphore the
+        # task-major job order let one CLI hold every slot while others idled.
         semaphore = asyncio.Semaphore(self.config.effective_workers(len(tasks)))
+        lanes: dict[str, asyncio.Semaphore] = {}
+        if self.config.concurrency == "per_target" and not self.config.parallel_workers:
+            lanes = {
+                t.name: asyncio.Semaphore(self.config.concurrency_per_target) for t in targets
+            }
         run_start = time.monotonic()
         checkpoint_path = Path(self.config.output_dir) / f"{self.run_id}.partial.json"
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
@@ -176,6 +193,13 @@ class BenchmarkRunner:
             )
 
         async def run_one(task: TaskConfig, target: Target, repeat: int) -> RunResult:
+            lane = lanes.get(target.name)
+            if lane is None:
+                return await _run_with_slot(task, target, repeat)
+            async with lane:
+                return await _run_with_slot(task, target, repeat)
+
+        async def _run_with_slot(task: TaskConfig, target: Target, repeat: int) -> RunResult:
             async with semaphore:
                 rep = f" #{repeat}" if repeats > 1 else ""
                 console.print(
@@ -247,6 +271,28 @@ class BenchmarkRunner:
                     f"Available: {', '.join(valid) or 'none queried'}."
                 )
 
+    @staticmethod
+    def _prevent_idle_sleep() -> None:
+        """Keep a Mac awake for the length of the run.
+
+        If the machine idle-sleeps mid-run, every CLI's connection to its
+        model drops (Kiro reports "stopped responding and timed out") and the
+        run stalls until it wakes — observed as a 40-minute gap that failed two
+        tasks at once. ``caffeinate -w <pid>`` holds an idle-sleep assertion
+        until this process exits. It can't stop sleep on lid close."""
+        if sys.platform != "darwin" or shutil.which("caffeinate") is None:
+            return
+        try:
+            # Security: static argv, no shell; the pid is our own.
+            subprocess.Popen(  # noqa: S603, S607
+                ["caffeinate", "-i", "-m", "-w", str(os.getpid())],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            console.print("[dim]Keeping this Mac awake during the run (caffeinate).[/dim]")
+        except OSError:
+            pass
+
     def _ensure_images(self, tasks) -> None:
         """Make each task's missing verification image available, automatically.
 
@@ -263,10 +309,13 @@ class BenchmarkRunner:
         Both are best-effort: failures are warned and the task then falls
         through to the normal missing-image harness-error path rather than
         crashing the run. Each image is handled once even if several tasks share
-        it."""
-        from .verify.docker_build import ensure_image, ensure_image_pulled
+        it. Up to ``image_build_workers`` images are built or pulled at once
+        (imported benchmarks ship one image per task, so a serial loop delayed
+        the first task by every build in turn)."""
+        from concurrent.futures import ThreadPoolExecutor
 
         seen: set[str] = set()
+        todo = []
         for t in tasks:
             spec = getattr(t, "verify", None)
             if spec is None or not getattr(spec, "image", None):
@@ -274,35 +323,54 @@ class BenchmarkRunner:
             if spec.image in seen:
                 continue
             seen.add(spec.image)
+            todo.append(t)
+        if not todo:
+            return
+        workers = max(1, min(self.config.image_build_workers, len(todo)))
+        if workers == 1:
+            for t in todo:
+                self._ensure_one_image(t)
+            return
+        console.print(
+            f"[dim]Preparing {len(todo)} verification image(s), {workers} at a time …[/dim]"
+        )
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(self._ensure_one_image, todo))
 
-            build_ctx = getattr(spec, "build_context", None)
-            if build_ctx and t.task_dir is not None:
-                # Buildable image: build from the task's Dockerfile context.
-                context = (Path(t.task_dir) / build_ctx).resolve()
-                console.print(f"[dim]Ensuring verification image {spec.image} (build) …[/dim]")
-                result = ensure_image(
-                    spec.image, context,
-                    timeout_seconds=1800,
-                    log=lambda m: console.print(f"[dim]  {m}[/dim]"),
-                )
-                verb = "Built"
-            else:
-                # Prebuilt image with no local context: pull it from the registry.
-                console.print(f"[dim]Ensuring verification image {spec.image} (pull) …[/dim]")
-                result = ensure_image_pulled(
-                    spec.image,
-                    timeout_seconds=1800,
-                    log=lambda m: console.print(f"[dim]  {m}[/dim]"),
-                )
-                verb = "Pulled"
+    def _ensure_one_image(self, t) -> None:
+        """Build or pull one task's verification image (see _ensure_images)."""
+        from .verify.docker_build import ensure_image, ensure_image_pulled
 
-            if result.ok and result.built:
-                console.print(f"[green]✓[/green] {verb} verification image {spec.image}")
-            elif not result.ok:
-                console.print(
-                    f"[yellow]⚠ Could not obtain image {spec.image} for task "
-                    f"'{t.id}':[/yellow] {result.detail}"
-                )
+        spec = t.verify
+        build_ctx = getattr(spec, "build_context", None)
+        if build_ctx and t.task_dir is not None:
+            # Buildable image: build from the task's Dockerfile context.
+            context = (Path(t.task_dir) / build_ctx).resolve()
+            console.print(f"[dim]Ensuring verification image {spec.image} (build) …[/dim]")
+            result = ensure_image(
+                spec.image, context,
+                timeout_seconds=1800,
+                log=lambda m: console.print(f"[dim]  {m}[/dim]"),
+                platform=getattr(spec, "platform", None),
+            )
+            verb = "Built"
+        else:
+            # Prebuilt image with no local context: pull it from the registry.
+            console.print(f"[dim]Ensuring verification image {spec.image} (pull) …[/dim]")
+            result = ensure_image_pulled(
+                spec.image,
+                timeout_seconds=1800,
+                log=lambda m: console.print(f"[dim]  {m}[/dim]"),
+            )
+            verb = "Pulled"
+
+        if result.ok and result.built:
+            console.print(f"[green]✓[/green] {verb} verification image {spec.image}")
+        elif not result.ok:
+            console.print(
+                f"[yellow]⚠ Could not obtain image {spec.image} for task "
+                f"'{t.id}':[/yellow] {result.detail}"
+            )
 
     def _image_remediation(self, tasks, missing_images) -> str:
         """Build a per-image remediation hint for images that are still missing.
@@ -447,7 +515,7 @@ class BenchmarkRunner:
             f"START  {task.id}  target={target.label}  repeat={repeat}  mode={task.mode.value}"
         )
 
-        workspace = Workspace(run_id, task, self.config)
+        workspace = Workspace(run_id, task, self.config, target=target)
         try:
             workspace.setup()
         except Exception as e:
@@ -508,6 +576,16 @@ class BenchmarkRunner:
                 )
             else:
                 result.status = self._determine_status(result, task, all_phases_ok)
+                # The CLI exited abnormally but left files that were graded.
+                # Keep the score, but record why the CLI stopped (e.g. exit 143
+                # = SIGTERM) so the report doesn't show it as a clean run, and
+                # so missing cost data is explained.
+                if not all_phases_ok and not result.error_message:
+                    failed = next((p for p in phase_results if not p.success and p.error), None)
+                    if failed:
+                        result.error_message = (
+                            f"{failed.error}; the files it left were graded anyway"
+                        )
 
         except (asyncio.TimeoutError, TimeoutError) as e:
             result.status = TaskStatus.TIMEOUT

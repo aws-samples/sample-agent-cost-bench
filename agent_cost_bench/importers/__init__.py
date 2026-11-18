@@ -8,7 +8,7 @@ them unchanged.
 
 Supported sources (selected by ``type`` in a config ``task_sources:`` entry):
 
-* ``terminal-bench`` — Terminal-Bench 2.x tasks in the Harbor layout
+* ``terminal-bench`` — Terminal-Bench 4.x tasks in the Harbor layout
   (``task.toml`` + ``instruction.md`` + ``environment/`` + ``tests/``). Older
   Terminal-Bench 1.x tasks (nested ``task.yaml`` instruction + ``run-tests.sh``)
   are also handled.
