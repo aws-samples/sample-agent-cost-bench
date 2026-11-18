@@ -158,7 +158,7 @@ SUPPORTED=(
   "copilot|GitHub Copilot|copilot|copilot_json|GITHUB_TOKEN|npm|@github/copilot|claude-opus-4.8||apikey|copilot"
   "cursor|Cursor|agent|cursor_json|CURSOR_API_KEY|curl|https://cursor.com/install|claude-opus-4-8|agent --list-models|hybrid|agent login"
   "codex|OpenAI Codex|codex|codex_json|OPENAI_API_KEY|npm|@openai/codex|gpt-5.5||apikey|codex auth login"
-  "devin|Devin|devin|devin_export|DEVIN_API_KEY|curl|https://app.devin.ai/install.sh|claude-opus-4-8|devin models list|login|devin auth login"
+  "devin|Devin|devin|devin_export|DEVIN_API_KEY|curl|https://cli.devin.ai/install.sh|claude-opus-4-8|devin models list|login|devin auth login"
   "antigravity|Antigravity|agy|antigravity_json|GOOGLE_API_KEY|curl|https://antigravity.google/cli/install.sh|gemini-3.8-flash|agy models|login|agy login"
 )
 

@@ -40,6 +40,32 @@
   details summary { padding: 10px 12px; cursor: pointer; font-size: 13px; }
   details pre { margin: 0; padding: 12px; background: #0c0e14; overflow-x: auto; font-size: 12px;
                 border-top: 1px solid var(--border); white-space: pre-wrap; }
+  .matrix-wrap { overflow-x: auto; border-radius: 10px; }
+  table.matrix { font-size: 13px; }
+  table.matrix th, table.matrix td { padding: 7px 8px; vertical-align: top; }
+  table.matrix th.cli { white-space: normal; min-width: 78px; font-size: 11px; }
+  table.matrix td.cli { white-space: nowrap; }
+  /* Task and "Passed by" stay in view when many CLI columns scroll sideways. */
+  table.matrix .task { position: sticky; left: 0; z-index: 1; background: var(--card);
+                       font-weight: 600; white-space: nowrap; }
+  table.matrix th.task { z-index: 2; }
+  table.matrix .outcome { white-space: nowrap; border-right: 1px solid var(--border); }
+  table.matrix a.cell { display: flex; flex-direction: column; align-items: flex-start;
+                        gap: 2px; color: inherit; text-decoration: none; }
+  table.matrix a.cell:hover .badge { outline: 1px solid currentColor; }
+  table.matrix .badge { padding: 1px 7px; font-variant-numeric: tabular-nums; }
+  table.matrix .meta { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  table.matrix tr.outcome-timeout td.task { box-shadow: inset 3px 0 0 var(--warn); }
+  table.matrix tfoot td { border-top: 2px solid var(--border); }
+  .sym { font-weight: 700; }
+  .sym.pass { color: var(--pass); } .sym.fail, .sym.error { color: var(--fail); }
+  .sym.timeout { color: var(--warn); } .sym.unavailable { color: var(--cost); }
+  .checks { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  tr.task-start td { border-top: 2px solid var(--border); }
+  tr.task-cont td { border-top: none; }
+  tr.detail-row td { border-bottom: none; }
+  .same-task { color: var(--muted); padding-left: 6px; }
+  tr:target td { background: rgba(110,168,254,.08); }
   .hint { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
   .hint code { background: rgba(255,255,255,.07); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
   @media (max-width: 760px) { .chart-grid { grid-template-columns: 1fr; } }

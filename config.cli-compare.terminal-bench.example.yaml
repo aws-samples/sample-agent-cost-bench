@@ -1,0 +1,78 @@
+# Terminal-Bench 4.1 with Kiro CLI — run Kiro against the default set of 25
+# Terminal-Bench 4.1 tasks and report cost, quality and latency.
+#
+#   cp config.cli-compare.terminal-bench.example.yaml config.cli-compare.terminal-bench.yaml
+#   agent-cost-bench cli-compare run config.cli-compare.terminal-bench.yaml
+#
+# Before running:
+#   1. kiro-cli login               (or export KIRO_API_KEY)
+#   2. Start Docker. Every task is graded in its own verifier image, built from
+#      the task's tests/Dockerfile on first use (a few minutes per task the
+#      first time; reused after that).
+#   3. A host prepared with scripts/setup-terminal-bench-host.sh (Ubuntu
+#      x86_64). The agent works on the host, not in the task's container, so
+#      it uses the host's tools: 17 default tasks need only Python 3, Node and a
+#      C++ compiler; the other 8 also need tools such as Bun and RDKit.
+#
+# What runs: with no `tasks:` filter, the 25 default tasks (see the README
+# section "Terminal-Bench 4.x"). Tasks that need docker-compose or a GPU are
+# skipped automatically. Uncomment `tasks:` below for a quick smoke test first.
+#
+# Cost: TB 4.x tasks are long (expert estimates of several hours each), so a
+# full run of 25 tasks can use a lot of credits. Start with the smoke test.
+
+comparison_label: "Kiro CLI V3 (claude-opus-5.5) on Terminal-Bench 4.1"
+
+runners:
+  # kiro-cli 3.0 still defaults to the V2 engine, so --v3 selects the new agent.
+  # --trust-workspace skips V3's "Trust this workspace?" prompt, which
+  # non-interactive mode can't answer. Credits come from the stream-json events.
+  - name: kiro
+    display_name: "Kiro CLI V3"
+    cli_path: kiro-cli
+    model_id: claude-opus-5.5
+    pricing:
+      usd_per_credit: 0.04
+    cli_base_args: [chat, --v3, --no-interactive, --trust-all-tools,
+                    --trust-workspace,
+                    --output-format, stream-json,
+                    "--model={model}", "--effort={effort}"]
+
+# Terminal-Bench 4.1 tasks (cloned and cached under workspace_base/.repo_cache).
+# A task source is exclusive: the repo's own tasks/ folder is not run.
+task_sources:
+  - type: terminal-bench
+    path: https://github.com/harbor-framework/terminal-bench.git
+    ref: v4.1.0
+    subdir: tasks
+    # TB 4.x gives every task an 8-hour agent timeout; cap it per task here.
+    timeout_minutes: 60
+    # Smoke test: three short tasks whose grading was checked with the
+    # reference solution. Remove or comment out to run the full default set.
+    # tasks: [html-js-filter, sound-change-cascade, wal-recovery-ordering]
+
+tasks_dir: tasks
+task_ids:            # leave empty; listing ids here filters the imported tasks again
+modes: ["vibe"]
+
+# No rubric tasks in this set, so no LLM judge is needed.
+
+# Execution
+# per_target: each CLI gets its own lane. concurrency_per_target is how many
+# tasks that CLI runs at once (1 = one after another). TB tasks compile code
+# and run numerical work, so keep the total (CLIs × this) to about 4 on a
+# 16-vCPU host; a laptop handles about 2.
+concurrency: per_target
+concurrency_per_target: 2
+image_build_workers: 4     # grading images built at once before the first task
+timeout_minutes: 60
+repeats: 1
+functional_pass_threshold: 0.99
+# With Finch on macOS (CONTAINER_RUNTIME=finch), put this under your home
+# directory instead, e.g. ~/agent-cost-bench-tb, since Finch only mounts from there.
+workspace_base: /tmp/agent-cost-bench-terminal-bench
+
+# Reporting
+output_dir: results
+report_title: "Terminal-Bench 4.1: Kiro CLI V3"
+open_report: true

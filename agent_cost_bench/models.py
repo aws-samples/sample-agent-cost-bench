@@ -449,6 +449,22 @@ class VerifySpec(BaseModel):
         default=None,
         description="Task-relative dir with a Dockerfile to build `image` from if it is missing.",
     )
+    # True when `image` is built only for grading (Harbor's separate verifier,
+    # built from the task's tests/Dockerfile). Its author validated that the
+    # grader runs there, so the "does the image provide the runtimes the test
+    # files mention" pre-check does not apply: it would also flag tools that
+    # only appear in helper scripts the grader never runs.
+    dedicated_image: bool = Field(
+        default=False,
+        description="Image is built for grading only; skip the missing-runtime pre-check.",
+    )
+    # Docker platform to build and run the image for (e.g. "linux/amd64").
+    # Set when the grader only works on one CPU architecture, such as a task
+    # that ships x86_64-only wheels; on an ARM host Docker then emulates it.
+    platform: str | None = Field(
+        default=None,
+        description='Docker --platform for building and running `image` (e.g. "linux/amd64").',
+    )
     test_cmd: str | None = Field(default=None, description="Shell command that runs the tests")
     parser: str = Field(
         default="exit-code",
@@ -516,7 +532,7 @@ class TaskSourceSpec(BaseModel):
     Declared in a run config under ``task_sources:``. At discovery time each
     source is converted to native task fixtures (a ``task.yaml`` + ``verify/``
     assets) under a staging directory, which is then discovered like any other
-    task. This is how a config can say "run Terminal-Bench 2.1 tasks" and have
+    task. This is how a config can say "run Terminal-Bench 4.x tasks" and have
     the framework pick them up, convert them, and run them.
 
     ``path`` may be either a **local directory** OR a **git URL**. When it is a
@@ -532,10 +548,10 @@ class TaskSourceSpec(BaseModel):
         task_sources:
           # Auto-cloned from GitHub — nothing to download first:
           - type: terminal-bench
-            path: https://github.com/laude-institute/terminal-bench
-            ref: main                      # branch, tag, or 40-char commit SHA
+            path: https://github.com/harbor-framework/terminal-bench.git
+            ref: v4.1.0                    # branch, tag, or 40-char commit SHA
             subdir: tasks                  # tasks live under this repo subdir
-            tasks: [hello-world]           # optional name filter
+            tasks: [html-js-filter]        # optional name filter
           # Or a local checkout (ref/subdir/depth/token_env ignored):
           - type: terminal-bench
             path: ~/benchmarks/terminal-bench/tasks
@@ -544,7 +560,7 @@ class TaskSourceSpec(BaseModel):
     model_config = {"protected_namespaces": ()}
 
     type: str = Field(
-        description="Importer to use: 'terminal-bench' (Terminal-Bench 2.x/Harbor)."
+        description="Importer to use: 'terminal-bench' (Terminal-Bench 4.x/Harbor)."
     )
     path: str = Field(
         description=(
@@ -745,14 +761,16 @@ class BenchConfig(BaseModel):
     tasks_dir: str = Field(default="tasks")
     task_ids: list[str] | None = Field(default=None)
     modes: list[TaskMode] | None = Field(default=None)
-    # External benchmarks (e.g. Terminal-Bench 2.1) imported and run
+    # External benchmarks (e.g. Terminal-Bench 4.x) imported and run
     # alongside native tasks. Each is converted to native fixtures at discovery
     # time under `<workspace_base>/.imported-tasks/` and discovered normally.
     task_sources: list[TaskSourceSpec] = Field(default_factory=list)
 
     # ---- Execution ----
     # Concurrency strategy. Controls how many task × target jobs run at once.
-    #   "per_target" (default) — one concurrent job per enabled CLI/model. Safe
+    #   "per_target" (default) — each enabled CLI/model gets its own lane of
+    #                            `concurrency_per_target` jobs (default 1), so a
+    #                            slow CLI never takes a fast CLI's slot. Safe
     #                            for laptops and external-API rate limits.
     #   "full"                 — targets × tasks jobs all at once. Best for CI
     #                            with fast machines and high API quotas.
@@ -766,6 +784,17 @@ class BenchConfig(BaseModel):
     max_concurrency: int | None = Field(
         default=None, ge=1,
         description="Hard cap applied after the concurrency strategy",
+    )
+    # Jobs each CLI/model may run at once under `concurrency: per_target`.
+    # Total parallel runs = enabled targets × this (then `max_concurrency`).
+    concurrency_per_target: int = Field(
+        default=1, ge=1,
+        description="Parallel jobs per CLI/model when concurrency is per_target",
+    )
+    # Parallel Docker image builds/pulls before the first task starts.
+    image_build_workers: int = Field(
+        default=4, ge=1,
+        description="How many verification images to build or pull at once",
     )
     # Kept for programmatic use in tests; YAML users should prefer `concurrency`.
     parallel_workers: int = Field(default=0, ge=0, exclude=True)
@@ -842,7 +871,9 @@ class BenchConfig(BaseModel):
         """Resolve concurrency.
 
         Strategy:
-          ``per_target`` — one concurrent job per enabled target (default, conservative).
+          ``per_target`` — ``concurrency_per_target`` jobs per enabled target
+                           (default 1; conservative). The runner gives each
+                           target its own lane, so targets never share slots.
           ``full``       — targets × tasks, all jobs at once (opt-in for CI/fast machines).
           int            — explicit cap regardless of matrix size.
 
@@ -859,7 +890,7 @@ class BenchConfig(BaseModel):
         elif self.concurrency == "full":
             workers = n_targets * max(1, n_tasks)
         else:  # "per_target" default
-            workers = n_targets
+            workers = n_targets * self.concurrency_per_target
 
         if self.max_concurrency and self.max_concurrency > 0:
             workers = min(workers, self.max_concurrency)
@@ -933,6 +964,12 @@ class PhaseResult:
             "temporarily unavailable" in combined
             or "model you've selected is" in combined
             or "please relaunch with" in combined
+            # Account quota or credit exhausted (Devin: "Your daily usage quota
+            # has been exhausted", errorKind resource_exhausted). The run never
+            # got to finish the task, so it is not a model failure; retrying
+            # within the run won't help.
+            or "usage quota has been exhausted" in combined
+            or '"cognition.ai/errorkind": "resource_exhausted"' in combined
         )
 
     @property
@@ -960,6 +997,17 @@ class PhaseResult:
         if self.success:
             return False
         signatures = (
+            # Kiro CLI V3 stream-json: {"type":"runError",...,"message":"<model>
+            # stopped responding and timed out ...","retryErrorType":"TRANSIENT"}
+            '\\"retryerrortype\\":\\"transient\\"',
+            '"retryerrortype":"transient"',
+            "stopped responding and timed out",
+            # Kiro CLI V3 throttling: "<model> is experiencing high traffic"
+            # (ModelThrottleError, retryErrorType THROTTLING).
+            '\\"retryerrortype\\":\\"throttling\\"',
+            '"retryerrortype":"throttling"',
+            "modelthrottleerror",
+            "is experiencing high traffic",
             "having trouble responding",
             "failed to receive the next message",
             "failed to send the request",

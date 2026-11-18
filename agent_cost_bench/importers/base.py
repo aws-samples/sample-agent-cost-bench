@@ -9,9 +9,10 @@ list of :class:`ImportedTask` records.
 
 Design note — how a container-native benchmark maps onto this framework
 ------------------------------------------------------------------------
-Terminal-Bench 2.x (Harbor) runs the agent *inside* the task's own Docker image
-and then runs the task's own ``tests/test.sh`` in that same image, where the
-test script writes a reward (0..1) to ``/logs/verifier/reward.txt``.
+Terminal-Bench (Harbor) runs the agent *inside* the task's own Docker image
+and then runs the task's own ``tests/test.sh`` (in that image, or in a separate
+verifier image for 4.x tasks), where the test script writes a reward (0..1) to
+``/logs/verifier/reward.txt``.
 
 This framework instead runs the agent in a host workspace and, for a Docker
 ``verify:`` block, copies the model's ``workspace/src`` into a fresh container
@@ -224,7 +225,6 @@ def _registry() -> dict[str, Converter]:
 
     return {
         "terminal-bench": convert_terminal_bench_task,
-        "terminal-bench-2": convert_terminal_bench_task,  # alias
         "tb": convert_terminal_bench_task,                # alias
     }
 

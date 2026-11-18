@@ -297,13 +297,24 @@ def pristine_baseline(task: TaskConfig, config: BenchConfig) -> Path | None:
 # Workspace
 # ---------------------------------------------------------------------------
 
+def _is_devin(target) -> bool:
+    """True when ``target`` runs the Devin CLI."""
+    source = getattr(target, "cost_source", None)
+    if getattr(source, "value", source) == "devin_export":
+        return True
+    return Path(str(getattr(target, "cli_path", "") or "")).name == "devin"
+
+
 class Workspace:
     """An isolated workspace for a single task × target run."""
 
-    def __init__(self, run_id: str, task: TaskConfig, config: BenchConfig):
+    def __init__(self, run_id: str, task: TaskConfig, config: BenchConfig, target=None):
         self.run_id = run_id
         self.task = task
         self.config = config
+        # The CLI/model this workspace is for. When known, CLI-specific files
+        # (Devin's permission policy) are only written for that CLI.
+        self.target = target
         self._base = Path(config.workspace_base) / run_id
 
     @property
@@ -342,13 +353,18 @@ class Workspace:
         rules into each workspace pre-approves exactly the build/test commands a
         coding task needs while keeping credential paths denied.
 
-        Written for every run (like the ``.kiro`` dirs above) — CLIs other than
-        Devin simply ignore the directory. Missing or unreadable policy files
-        are not fatal: the run proceeds and Devin falls back to its default
-        Normal mode, where rejected tool calls show up as warnings on stderr.
+        Written only for Devin runs when the workspace knows its target: other
+        agents read workspace files for context, and a stray ``.devin/`` policy
+        is noise they spend tokens on (observed with Kiro). Without a target
+        (direct callers) it is written for every run. Missing or unreadable
+        policy files are not fatal: the run proceeds and Devin falls back to its
+        default Normal mode, where rejected tool calls show up as warnings on
+        stderr.
         """
         src = getattr(self.config, "devin_permissions_file", "") or ""
         if not src:
+            return
+        if self.target is not None and not _is_devin(self.target):
             return
         src_path = Path(src).expanduser()
         if not src_path.is_file():

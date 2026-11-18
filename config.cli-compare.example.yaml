@@ -399,7 +399,7 @@ tasks_dir: tasks
 task_ids: 
 modes: ["vibe"]
 
-# Bring your own tasks: Terminal-Bench (optional). Point `path` at the
+# Bring your own tasks: Terminal-Bench 4.x (optional). Point `path` at the
 # Terminal-Bench repo (a git URL is cloned + cached automatically — nothing to
 # download by hand) or a local checkout, and the framework converts its tasks to
 # native fixtures at run time and runs your CLIs against them. Imported ids are
@@ -407,26 +407,23 @@ modes: ["vibe"]
 # in its own Docker image (auto-pulled/built).
 #
 # NOTE: this brings Terminal-Bench TASKS into this framework's host-agent model;
-# it does not reproduce Terminal-Bench benchmark scores. Tasks that only produce
-# files grade correctly; tasks that need the agent to mutate the container
-# environment (install a runtime, build a system binary, run a service) are
-# auto-detected and skipped. With no `tasks:` filter, a curated set of
-# confirmed-gradeable tasks runs by default. See the README section
-# "Bring your own tasks (Terminal-Bench 2.1)".
+# it does not reproduce Terminal-Bench benchmark scores. Tasks that need a
+# docker-compose environment or a GPU are skipped automatically. With no
+# `tasks:` filter, a default set of 25 tasks runs. See the README section
+# "Terminal-Bench 4.x".
 #
 # When a task source is enabled it is EXCLUSIVE: only imported tasks run and the
 # local `tasks/` tree is skipped. Uncomment to enable:
 #
 # task_sources:
 #   - type: terminal-bench
-#     path: https://github.com/harbor-framework/terminal-bench-2-1.git
-#     ref: main            # branch, tag, or a full 40-char commit SHA (pin for reproducibility)
+#     path: https://github.com/harbor-framework/terminal-bench.git
+#     ref: v4.1.0          # or v4.0.0 (same 66 tasks); a tag or full commit SHA
 #     subdir: tasks        # the tasks live under this repo subdirectory
-#     # tasks: [chess-best-move, write-compressor]   # optional: pick specific source
-#     #   task names. Omit to use the curated harness-compatible default set.
-#     # Terminal-Bench tasks carry a tight per-task timeout from their task.toml
-#     # (often 15 min). Override it here to give the agent more time.
-#     timeout_minutes: 20
+#     # tasks: [html-js-filter, sound-change-cascade]   # optional: pick specific
+#     #   source task names. Omit to use the default set.
+#     # Terminal-Bench 4.x gives every task an 8-hour agent timeout; cap it here.
+#     timeout_minutes: 60
 
 # LLM-as-judge
 judge_cli_path: kiro-cli

@@ -78,7 +78,7 @@ The script drives a `cli-compare` run through four steps:
 > | `judge_weight` | `0.6` | Weight of the judge score in the blended result |
 > | `modes` | `["vibe"]` | cli-compare runs vibe tasks only |
 > | `task_ids` | *(empty)* | Runs **all** bundled tasks — including Docker-graded ones, which need a local Docker daemon |
-> | `concurrency` | `per_target` | Parallelism strategy |
+> | `concurrency` | `per_target` | Parallelism strategy (one task at a time per CLI; see [Running tasks in parallel](#running-tasks-in-parallel)) |
 > | `timeout_minutes` | `20` | Per-task timeout |
 > | `repeats` | `1` | Runs each task once |
 > | `functional_pass_threshold` | `0.99` | Score needed to count as a PASS |
@@ -442,6 +442,36 @@ effort: high
 
 Valid values: `low`, `medium`, `high` (default: `high`). A run-level fallback (`effort:` in the main config) still works for backward compatibility — per-task settings override it.
 
+### Running tasks in parallel
+
+```yaml
+concurrency: per_target      # default
+concurrency_per_target: 2    # each CLI/model runs up to 2 tasks at once (default 1)
+max_concurrency: 6           # optional hard cap on all parallel runs
+image_build_workers: 4       # Docker images built/pulled at once before the run (default 4)
+```
+
+- **`per_target`** (default) gives every CLI or model its own lane of `concurrency_per_target`
+  slots. A slow CLI only waits on its own lane, so it never holds up a faster one. Total
+  parallel runs = number of CLIs × `concurrency_per_target`.
+- **`full`** runs every task × target job at once; **an integer** (e.g. `concurrency: 4`) is one
+  shared pool of that size, which a slow CLI can fill.
+- `max_concurrency` caps the total under any strategy.
+
+Parallel runs don't mix up results. Each task × CLI × repeat gets its own workspace
+(`<workspace_base>/<run_id>_<task>_<cli>[_r<n>]`) and its own grading container. The run log
+writes each CLI call or grading step as one complete block, tagged with the task and CLI, so
+blocks from different tasks follow each other in finish order but never interleave. Search the
+log for the task id to follow one task.
+
+Things to watch when raising parallelism:
+
+- **Host load affects timings.** Tasks that compile code, train models or run benchmarks compete
+  for CPU and memory, so wall-clock times are less comparable between CLIs when many run at
+  once. Keep the total below the host's cores divided by about 4 for Terminal-Bench tasks.
+- **API rate limits and spend.** More parallel runs means more simultaneous requests and faster
+  credit use.
+
 ### Useful commands
 
 ```bash
@@ -453,7 +483,12 @@ agent-cost-bench new-task my-task --with-tests                               # s
 agent-cost-bench import-tasks --type terminal-bench --path ~/tb/tasks        # import external tasks
 ```
 
-Reports (HTML + JSON) are written to `results/` and open automatically.
+Reports (HTML + JSON) are written to `results/` and open automatically. In a `cli-compare`
+report, **Results by Task** shows one row per task and one column per CLI, so you can see at a
+glance which CLI passed each task, with checks passed, cost and time in each cell; the last row
+totals each CLI. **Detailed Results** below it lists every run grouped by task, with failed
+checks, grader output and the CLI transcript. To re-render a report from saved results:
+`agent-cost-bench report results/<run_id>.json -o results`.
 
 ## Included tasks
 
@@ -491,7 +526,7 @@ Select tasks with `task_ids:` in your config. Omit it to run everything.
 
 > Rubric-graded tasks need `judge_model`. Docker tasks need Docker + prebuilt images.
 >
-> You can also bring in Terminal-Bench tasks as extra comparison tasks — see [Bring your own tasks](#bring-your-own-tasks-terminal-bench-21) below.
+> You can also bring in Terminal-Bench tasks as extra comparison tasks — see [Bring your own tasks](#bring-your-own-tasks-terminal-bench-4x) below.
 > The seven high-complexity tasks (`event-sourcing-cqrs` through `platform-as-a-service`) are greenfield multi-file applications (7-16 files, 30-72 pytest scenarios each) that stress multi-file architecture and cross-cutting concerns; they take ~5-22 min per run versus under 2 min for the single-file tasks.
 
 ## How verification works
@@ -556,13 +591,18 @@ AGENT_COST_BENCH_RESULT: {"score": 0.7, "checkpoints": {...}, "summary": "..."}
 
 `functional_pass_threshold` in `task.yaml` sets the score needed for a PASS (default: 0.99). Lower it for rubric tasks that rarely need perfection.
 
-## Bring your own tasks (Terminal-Bench 2.1)
+## Bring your own tasks (Terminal-Bench 4.x)
+
+> For the config, the default task set, and the host setup for heavier tasks, go straight to
+> [Terminal-Bench 4.x](#terminal-bench-4x) below. For how a task is converted, with a worked
+> example, see [terminal-bench.md](terminal-bench.md).
 
 Want more tasks to compare CLIs on than the ones bundled here? You can pull in tasks from
-[Terminal-Bench](https://github.com/harbor-framework/terminal-bench-2-1) and run your CLIs against them. The framework imports Terminal-Bench 2.x tasks (Harbor layout: `task.toml` +
-`instruction.md` + `environment/` + `tests/`; older 1.x layouts are handled too), converts each
-to a native fixture, and grades it with the task's **own** hidden test suite — giving you a pool
-of real, third-party tasks for the cost/quality comparison without authoring them yourself.
+[Terminal-Bench](https://github.com/harbor-framework/terminal-bench) and run your CLIs against
+them. The framework imports Terminal-Bench 4.x tasks (Harbor layout: `task.toml` +
+`instruction.md` + `environment/` + `tests/`), converts each to a native fixture, and grades it
+with the task's **own** hidden test suite, giving you a pool of real, third-party tasks for the
+cost/quality comparison without authoring them yourself.
 
 > **This is "bring Terminal-Bench tasks into this framework," not "run the Terminal-Bench
 > benchmark."** The two harnesses execute differently, and that difference matters:
@@ -574,26 +614,22 @@ of real, third-party tasks for the cost/quality comparison without authoring the
 >   environment does not reach the grading container.
 >
 > The practical consequence: tasks that only require the agent to **produce files** (transform
-> data, write a program, fix code) grade correctly and are great for comparing CLIs. Tasks that
-> require the agent to **mutate the container environment** (e.g. "install R", "build `pmars`
-> into `/usr/local/bin`", "run a web server") cannot be graded faithfully here — the framework
-> detects and skips those rather than scoring them as model failures. So treat Terminal-Bench
+> data, write a program, fix code) grade correctly and are good for comparing CLIs. Tasks whose
+> agent needs tools that only the task's image provides fail here for reasons unrelated to the
+> model, and tasks that need several containers or a GPU are skipped. So treat Terminal-Bench
 > here as a *source of extra comparison tasks*, not as a way to reproduce Terminal-Bench scores.
 > If you need faithful Terminal-Bench leaderboard numbers, use Terminal-Bench's own harness.
 
-**Curated default.** Because a large share of the suite assumes in-container execution, a
-`terminal-bench` source with **no explicit `tasks:` filter** defaults to a small, curated set of
-tasks that have been confirmed to grade correctly under this host-agent model (rather than
-running all ~89 and reporting a wall of structural failures). Set `tasks:` explicitly to run any
-tasks you choose — the curated default only applies when you don't. The confirmed set lives in
-`agent_cost_bench/importers/terminal_bench.py` (`_TERMINAL_BENCH_SUPPORTED`) and grows as runs
-confirm more tasks are gradeable.
+**Default set.** A `terminal-bench` source with **no explicit `tasks:` filter** runs a default
+set of 25 tasks that suit this host-agent model, instead of all 66. Set `tasks:` explicitly to
+run any tasks you choose. The default set lives in
+`agent_cost_bench/importers/terminal_bench.py` (`_TERMINAL_BENCH_4_CANDIDATES`); see
+[Default set](#default-set-25-tasks) below.
 
 **How grading is bridged.** The importer emits a Docker `verify:` block (`parser: reward-file`)
-that copies the model's `src/` into the task image, runs the task's own test script, and reads
-the reward it writes. The imported prompt instructs the model to place its solution under `src/`,
-and any input files the task references (e.g. `/app/data.txt`) are seeded into the workspace so
-the model can read them.
+that copies the task's graded files from the model's `src/` into the task's verifier image, runs
+the task's own test script, and reads the reward it writes. Details are in
+[Terminal-Bench 4.x](#terminal-bench-4x).
 
 ### Option A — declare a task source in your config (imported at run time)
 
@@ -608,11 +644,12 @@ imports from there — you don't have to download anything by hand:
 task_sources:
   # Auto-cloned from GitHub — nothing to download first:
   - type: terminal-bench
-    path: https://github.com/laude-institute/terminal-bench
-    ref: main                                 # branch, tag, or full 40-char commit SHA
+    path: https://github.com/harbor-framework/terminal-bench.git
+    ref: v4.1.0                               # tag, branch, or full 40-char commit SHA
     subdir: tasks                             # repo subdirectory that holds the tasks
-    # tasks: [chess-best-move, write-compressor]  # optional: pick specific source task names.
-    #   Omit to use the curated harness-compatible default set (see above).
+    timeout_minutes: 60                       # cap TB 4.x's 8-hour agent timeout
+    # tasks: [html-js-filter, sound-change-cascade]  # optional: pick specific source task
+    #   names. Omit to use the default set (see above).
     # token_env: GITHUB_TOKEN                 # for a PRIVATE repo over HTTPS (env var NAME)
 
   # Or a local checkout (ref/subdir/depth/token_env are ignored for a local path):
@@ -629,8 +666,8 @@ Then run as usual — `agent-cost-bench cli-compare run config.yaml`. Imported i
 > (`enabled: false`) to go back to running the local `tasks/`. `tasks_dir` is still read from the
 > config but ignored while a task source is active.
 >
-> With no `tasks:` filter, only the curated harness-compatible default set is imported (see the
-> "Curated default" note above). Set `tasks:` to override that and pick your own.
+> With no `tasks:` filter, only the default set is imported (see the "Default set" note above).
+> Set `tasks:` to override that and pick your own.
 
 #### Caveats for git task sources
 
@@ -645,7 +682,7 @@ Then run as usual — `agent-cost-bench cli-compare run config.yaml`. Imported i
   `<workspace_base>/.repo_cache/<url_hash>/<ref>/` and reused on every later run — parallel runs
   share a single fetch. It is **not** re-fetched automatically, so if `ref` is a moving branch
   (e.g. `main`) that advances upstream, you keep getting the originally-cloned snapshot. Pin `ref`
-  to a full 40-char commit SHA for reproducibility. To force a fresh clone, delete the cache:
+  to a release tag (e.g. `v4.1.0`) or a full 40-char commit SHA for reproducibility. To force a fresh clone, delete the cache:
   `rm -rf <workspace_base>/.repo_cache`.
 - **Windows filesystem notes.** The cache/clean-up logic is OS-agnostic and has been made
   Windows-safe: publishing a freshly-cloned tree retries to ride out transient antivirus/indexer
@@ -663,36 +700,191 @@ agent-cost-bench import-tasks --type terminal-bench --path ~/terminal-bench/task
 
 # Import only named tasks
 agent-cost-bench import-tasks --type terminal-bench --path ~/tb/tasks \
-    --task hello-world --task fix-permissions
+    --task html-js-filter --task sound-change-cascade
 
 # Import tasks into a custom root
 agent-cost-bench import-tasks --type terminal-bench --path ~/tb/tasks --into tasks
 
-# Import AND build the Docker images now (otherwise they build on first run)
-agent-cost-bench import-tasks --type terminal-bench --path ~/tb/tasks --build
 ```
 
-Each import writes a native `tasks/<mode>/<id>/` fixture (a `task.yaml` plus the copied
-`verify/tests/`, the task's `environment/` build context, and the oracle solution under
-`reference/`). Tasks that ship a Dockerfile get their image built automatically on first
-run (see the Docker image note below).
+Each import writes a native `tasks/<mode>/<id>/` fixture: a `task.yaml`, the copied
+`verify/tests/` (which is also the verifier image's build context), the task's input files under
+`src/`, and the oracle solution under `reference/`. Tasks the harness can't run (see
+"Skipped automatically" under [Terminal-Bench 4.x](#terminal-bench-4x)) get an `UNSUPPORTED.txt`
+with the reason instead of a `task.yaml`.
 
-> **Docker image.** These tasks are graded in the source benchmark's own container. When the
-> source `task.toml`/manifest names a prebuilt `docker_image`, it is used as-is. When the task
-> ships only a `Dockerfile`, the importer copies its build context to `verify/environment/` and
-> records `verify.build_context` in the generated `task.yaml`. **The framework builds the image
-> automatically** the first time the task runs (and reuses it on later runs) — no manual build
-> step. You can also build eagerly at import time with `import-tasks --build`, or build it
-> yourself. If a build fails or the daemon is down, that task is reported as a harness error
-> (not a model failure) and the others still run.
+> **Docker image.** These tasks are graded in the task's own verifier image. When `task.toml`
+> names a prebuilt `[verifier.environment].docker_image`, it is used as-is. Otherwise the image
+> is built from `tests/Dockerfile`, which is recorded as `verify.build_context` in the generated
+> `task.yaml`. **The framework builds the image automatically** the first time the task runs and
+> reuses it on later runs, so there is no manual build step. If a build fails or the daemon is
+> down, that task is reported as a harness error (not a model failure) and the others still run.
 
 ### Reward parsing
 
 Imported tasks score with the `reward-file` parser, which reads the reward the task's verifier
 writes (Harbor's convention is `/logs/verifier/reward.txt`). It accepts a float in `[0, 1]`
 (graduated reward), an integer `passed total` / `passed/total` pair, a binary `1`/`0`, or a
-small `{"reward": ...}` / `{"passed": .., "total": ..}` JSON object. If a task exits without
-writing a reward, the runner synthesizes one from the exit code.
+small `{"reward": ...}` / `{"passed": .., "total": ..}` JSON object. Tasks that write only
+`/logs/verifier/reward.json` keep that score. If a task exits without writing either file, the
+runner synthesizes a reward from the exit code.
+
+When the verifier also writes a per-check report (`/logs/verifier/ctrf.json`, which most
+Terminal-Bench 4.x graders do), the report row shows the check count next to the reward (e.g.
+`reward=0.000 · 11/13 checks passed`) and lists each failed check with its message. The score
+still comes from the reward. A failed task with `no per-check results written by the grader`
+usually means the grader stopped before checking anything, which points to the environment
+rather than the model. See [terminal-bench.md](terminal-bench.md#telling-a-harness-failure-from-a-model-failure).
+
+### Terminal-Bench 4.x
+
+[Terminal-Bench 4.0](https://www.tbench.ai/news/terminal-bench-4-0) and 4.1 live in one repository,
+[harbor-framework/terminal-bench](https://github.com/harbor-framework/terminal-bench), tagged
+per release. Both have the same 66 tasks; 4.1 fixes verifiers and pins image digests, so prefer
+`v4.1.0`.
+
+```yaml
+task_sources:
+  - type: terminal-bench
+    path: https://github.com/harbor-framework/terminal-bench.git
+    ref: v4.1.0          # or v4.0.0
+    subdir: tasks
+    timeout_minutes: 60  # TB 4.x gives every task an 8-hour agent timeout; cap it
+    # tasks: [...]       # omit to run the default set below
+```
+
+**How 4.x grading works here.** Every 4.x task grades in its own verifier image, built from
+the task's `tests/Dockerfile` (it holds the test dependencies and reference data). Only the
+paths the task lists under `artifacts` in `task.toml` are copied from the agent's work into
+that image. The importer maps this onto the host workspace:
+
+- `src/` stands for `/app`. The files the agent image would have under `/app` (from its
+  `environment/Dockerfile` `COPY` lines, folders included) are seeded into `src/` before the
+  run, up to 500 MB per task.
+- Any other absolute path maps under `src/_root/`, e.g. `/results/output.json` is
+  `src/_root/results/output.json`. Inputs outside `/app` are seeded only when the instruction
+  names their folder (e.g. `/root/data`).
+- The prompt lists each graded artifact and where to write it. At grading time only those
+  paths are copied into the verifier container. Symlinks that point outside `src/` and
+  setuid/setgid bits are removed first, as Terminal-Bench does.
+
+The verifier image is built on the first run that needs it and tagged with a hash of the
+task's `tests/` folder, so switching from 4.0 to 4.1 never reuses a stale image.
+
+**Skipped automatically (19 tasks).** These are reported as skipped when imported and never
+run:
+- **docker-compose (11):** `ctr-optimization`, `cumulative-layout-shift`, `freight-dispatch-shift`,
+  `heat-pump-warranty`, `intrastat-meldung`, `kv-live-surgery`, `legacy-utility-triage`,
+  `live-database-cutover`, `medical-claims-processing`, `nextjs-performance`,
+  `payments-pipeline-fix`
+- **GPU (3):** `fp8-rmsnorm-gemm`, `jax-speedrun-gpu`, `math-eval-grader`
+- **Inputs created while the image is built (4):** `data-anonymization`, `interleaved-vigenere`,
+  `mp-checkpoint-consolidation`, `pretrain-shard-corruption`
+- **Grader collects output from the agent's container (1):** `shadow-relay`
+
+#### Default set (25 tasks)
+
+With no `tasks:` filter a 4.x source runs these 25 tasks. Their inputs ship with the task and
+the agent can produce the graded files on the host.
+
+**17 tasks that need only Python 3, Node and a C++ compiler** (plus small pip packages the
+agent can install itself):
+
+`cargo-flight-dispatch`, `embedding-drift-monitor`, `session-window-debug`,
+`wal-recovery-ordering`, `html-js-filter`, `sound-change-cascade`,
+`telecom-entity-resolution`, `production-planning`, `ontology-kg-querying`,
+`photonic-waveguide-routing`, `foodstuff-beta-activity`, `fin-saccr-rwa`,
+`glycan-ms2-elucidation`, `protein-autointerp-disulfide`, `mvcc-lsm-compaction`,
+`ks-solver-cpp`, `react-lead-form`
+
+**8 tasks confirmed on a host prepared with
+[`scripts/setup-terminal-bench-host.sh`](scripts/setup-terminal-bench-host.sh)** (each reached
+a real pass/fail verdict from its own grader):
+
+| Task | What the agent needs on the host |
+|------|----------------------------------|
+| `batched-eval-parity` | Python with numpy; runs a small local model |
+| `cad-model` | Nothing special; writes a STEP file by hand |
+| `hof-topology-interpenetration` | Python crystallography analysis |
+| `layout-config-recreation2` | Pillow |
+| `bun-sourcemap-leak` | Bun 1.2.15 |
+| `music-harmony` | Reads a sheet-music PDF; music21 and Poppler help |
+| `roy-polymorph-cn` | RDKit, numpy, scipy, pandas |
+| `vba-userform-port` | Node, Python, SQLite; reads `/shared/...` and writes `/workspace/...` (both mapped under `src/_root/`) |
+
+> On a host without these tools (for example a laptop without Bun or RDKit), those 8 tasks
+> fail for reasons unrelated to the model. Run on a prepared host, or set `tasks:` to the
+> first 17.
+
+The list is `_TERMINAL_BENCH_4_CANDIDATES` in `agent_cost_bench/importers/terminal_bench.py`.
+Remove a task from it if a run ends in a harness error rather than a real pass/fail verdict.
+
+#### Other tasks you can try on a prepared host
+
+These import and grade the same way but aren't in the default set. List them under `tasks:`.
+
+| Task | Why it isn't in the default set |
+|------|----------------------------------|
+| `lake-temp-glm` | Needs CPU PyTorch; trains a model and timed out at 60 minutes (8 expert-hours) |
+| `layout-config-recreation` | Needs Pillow and Playwright with Chromium; timed out at 60 minutes |
+| `vf2-speedup-networkx` | Needs Rust and a C toolchain; timed out at 60 minutes |
+| `rs-archive-clone` | Not run yet |
+
+Raise `timeout_minutes` (120–240) for the three that timed out. The specialist-tool tasks
+(Coq, Lean, Sage, FreeCAD, Meep, VEP, Verilator, QEMU) also need the setup script run without
+its `SKIP_*` switches and haven't been tried with this harness.
+
+**Prerequisites**
+
+- **Host:** Ubuntu 24.04 on x86_64. On EC2, `m8i.4xlarge` (16 vCPU, 64 GiB) runs about 4 tasks
+  at once in total (for example 2 CLIs × `concurrency_per_target: 2`); use `m8i.8xlarge` for
+  more. The heaviest task here asks for 8 vCPU and 16 GB.
+- **Disk:** 500 GB or more of gp3. Each task builds its own verifier image, and PyTorch tasks
+  add several GB each.
+- **Access:** reach the instance through SSM Session Manager or SSH restricted to your IP.
+  The setup script opens no ports.
+- **Accounts:** a login for every CLI you compare. The script installs the CLIs but cannot log
+  in for you.
+
+**Set up the host**
+
+```bash
+git clone https://github.com/aws-samples/sample-agent-cost-bench.git
+cd sample-agent-cost-bench
+INSTALL_CLIS="kiro devin" bash scripts/setup-terminal-bench-host.sh
+# log out and back in (docker group and PATH), then log in to each CLI:
+kiro-cli login
+devin auth login
+```
+
+Run the script as a normal user with sudo rights, not as root. It installs Docker, Python
+3.11 to 3.13, Node 22, Bun, JDK 17 with sbt, Rust, the system tools the tasks use, and one
+shared Python environment at `/opt/tb/py` that holds the task libraries (CPU PyTorch, RDKit,
+Pillow, Playwright and others) plus agent-cost-bench itself. `/etc/profile.d/terminal-bench-tools.sh`
+puts that environment first on `PATH`, so the agent's `python3` finds the libraries. Run
+`agent-cost-bench` from the same login shell. Re-running the script skips what is already
+installed; see the header of the script for options such as `INSTALL_CLIS`, `TB_REF` and the
+`SKIP_*` switches.
+
+The script also installs tools for tasks outside this table (Coq, Lean 4, Sage, FreeCAD,
+Meep, Verilator/Yosys, QEMU, the VEP Perl stack). Those tasks are not in the default set and
+have not been tried with this harness; list them under `tasks:` to experiment.
+
+The default set needs no `tasks:` line. To try the other tasks, list them and allow more time:
+
+```yaml
+task_sources:
+  - type: terminal-bench
+    path: https://github.com/harbor-framework/terminal-bench.git
+    ref: v4.1.0
+    subdir: tasks
+    timeout_minutes: 180
+    tasks: [lake-temp-glm, layout-config-recreation, vf2-speedup-networkx, rs-archive-clone]
+```
+
+> The shared Python environment is not pinned per task: the tasks disagree (one pins numpy
+> 1.26.4, another numpy 2.4.6), so it installs current versions. The task's verifier image
+> still uses the task's own pins when grading.
 
 ## Supported CLIs and cost detection
 

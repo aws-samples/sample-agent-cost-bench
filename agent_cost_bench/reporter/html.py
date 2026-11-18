@@ -13,11 +13,19 @@ Charts use a bundled Chart.js (no external CDN dependency).
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from ..models import BenchmarkRun, CompareMode, TaskMode, TaskStatus, _clip_transcript
+
+
+def _tail(text: str | None, limit: int) -> str:
+    """Keep the END of verifier output: test runners print their failure
+    summary last, so the start of a long log rarely says what failed."""
+    text = text or ""
+    return text if len(text) <= limit else "…" + text[-limit:]
 
 
 class HTMLReporter:
@@ -81,7 +89,9 @@ class HTMLReporter:
         labels = [s["target"] for s in cost_rows]
 
         pass_at_k_rows = self._pass_at_k_rows(run)
-        result_rows = self._cli_result_rows(run)
+        column_order = self._target_column_order(run)
+        result_rows = self._cli_result_rows(run, column_order)
+        task_matrix = self._task_matrix(result_rows, column_order)
 
         task_labels = sorted({r.task_id for r in run.results})
         target_order = [s["target"] for s in cost_rows]
@@ -120,6 +130,8 @@ class HTMLReporter:
             "repeats": run.repeats,
             "pass_at_k_rows": pass_at_k_rows,
             "result_rows": result_rows,
+            "task_matrix": task_matrix,
+            "matrix_targets": column_order,
             "chart_labels": json.dumps(labels),
             "chart_avg_cost": json.dumps([round(s["avg_cost"], 5) for s in cost_rows]),
             "chart_cost_per_pass": json.dumps(
@@ -132,10 +144,151 @@ class HTMLReporter:
             "chart_task_latency": json.dumps(per_task_latency),
         }
 
-    def _cli_result_rows(self, run: BenchmarkRun) -> list[dict]:
-        rows = []
+    @staticmethod
+    def _target_column_order(run: BenchmarkRun) -> list[str]:
+        """CLI labels in config order, then any others found in the results."""
+        order = [t.label for t in run.config.targets]
         for r in run.results:
+            if r.target not in order:
+                order.append(r.target)
+        present = {r.target for r in run.results}
+        return [t for t in order if t in present]
+
+    @staticmethod
+    def _checks_label(fr) -> str:
+        """Short check count for a run, e.g. "11/13", or "" when unknown."""
+        if fr is None:
+            return ""
+        tests = (fr.checkpoints or {}).get("tests")
+        if not isinstance(tests, dict):
+            return ""
+        detail = str(tests.get("detail") or "")
+        m = re.match(r"(\d+)/(\d+) checks", detail)
+        if m:
+            return f"{m.group(1)}/{m.group(2)}"
+        total, passed = tests.get("total"), tests.get("passed")
+        # 1000 is the reward-file parser's fixed scale for a graduated reward,
+        # not a real number of tests.
+        if isinstance(total, int) and isinstance(passed, int) and total and total != 1000:
+            return f"{passed}/{total}"
+        return ""
+
+    _STATUS_SYMBOL = {
+        "pass": "✓", "fail": "✗", "error": "!", "timeout": "⏱",
+        "unavailable": "–", "skip": "–",
+    }
+
+    @staticmethod
+    def _shared_prefix(names: list[str]) -> str:
+        """The prefix every task id shares, cut at a '-' boundary (e.g.
+        "terminal-bench-"), so the grid can show short task names."""
+        if len(names) < 2:
+            return ""
+        prefix = names[0]
+        for n in names[1:]:
+            while not n.startswith(prefix):
+                prefix = prefix[:-1]
+        cut = prefix.rfind("-")
+        return prefix[: cut + 1] if cut > 0 else ""
+
+    def _task_matrix(self, rows: list[dict], targets: list[str]) -> dict:
+        """The per-task grid: one row per task with a cell per CLI, so a task's
+        results can be compared side by side, plus a per-CLI total row.
+        Repeats of the same task × CLI share a cell."""
+        by_task: dict[str, dict[str, list[dict]]] = {}
+        for row in rows:
+            by_task.setdefault(row["task_id"], {}).setdefault(row["target"], []).append(row)
+        prefix = self._shared_prefix(sorted(by_task))
+        totals = {t: {"passed": 0, "scored": 0, "cost": 0.0, "has_cost": False} for t in targets}
+
+        matrix = []
+        for task_id in sorted(by_task):
+            cells, passed_by, counted = [], [], []
+            for target in targets:
+                runs = by_task[task_id].get(target, [])
+                if not runs:
+                    cells.append(None)
+                    continue
+                n_pass = sum(1 for r in runs if r["status"] == TaskStatus.PASSED.value)
+                scored = [r for r in runs if r["status"] != TaskStatus.UNAVAILABLE.value]
+                if scored:
+                    counted.append(target)
+                    if n_pass:
+                        passed_by.append(target)
+                first = runs[0]
+                costs = [r["cost_usd"] for r in runs if r["cost_usd"] is not None]
+                tot = totals[target]
+                tot["scored"] += len(scored)
+                tot["passed"] += n_pass
+                tot["cost"] += sum(costs)
+                tot["has_cost"] = tot["has_cost"] or bool(costs)
+                if len(runs) == 1:
+                    status, status_class = first["status"], first["status_class"]
+                    label = first["checks"] or status
+                else:
+                    status = f"{n_pass}/{len(runs)} passed"
+                    status_class = (
+                        "pass" if n_pass == len(runs) else "fail" if n_pass == 0 else "timeout"
+                    )
+                    label = f"{n_pass}/{len(runs)}"
+                cells.append({
+                    "status": status,
+                    "status_class": status_class,
+                    "symbol": self._STATUS_SYMBOL.get(status_class, ""),
+                    "label": label,
+                    "checks": first["checks"] if len(runs) == 1 else "",
+                    "cost_usd": sum(costs) / len(costs) if costs else None,
+                    "cli_time": sum(r["cli_time"] for r in runs) / len(runs),
+                    "anchor": first["anchor"],
+                    "title": f"{target}: {status}"
+                             + (f", {first['checks']} checks" if len(runs) == 1 and first["checks"]
+                                else ""),
+                })
+            n_counted, n_passed = len(counted), len(passed_by)
+            if not counted:
+                outcome, outcome_class = "no scored runs", "unavailable"
+            elif n_passed == n_counted:
+                outcome, outcome_class = f"{n_passed}/{n_counted} passed", "pass"
+            elif not passed_by:
+                outcome, outcome_class = f"0/{n_counted} passed", "fail"
+            else:
+                outcome, outcome_class = f"{n_passed}/{n_counted} passed", "timeout"
+            matrix.append({
+                "task_id": task_id,
+                "short_name": task_id[len(prefix):] if prefix else task_id,
+                "cells": cells,
+                "outcome": outcome,
+                "outcome_class": outcome_class,
+                "outcome_title": (
+                    "Passed: " + ", ".join(passed_by) if passed_by else "No CLI passed"
+                ),
+            })
+        footer = [
+            {
+                "passed": totals[t]["passed"],
+                "scored": totals[t]["scored"],
+                "cost": totals[t]["cost"] if totals[t]["has_cost"] else None,
+            }
+            for t in targets
+        ]
+        return {"rows": matrix, "prefix": prefix, "footer": footer}
+
+    def _cli_result_rows(self, run: BenchmarkRun, targets: list[str] | None = None) -> list[dict]:
+        """Detailed rows sorted by task, then CLI (config order), then repeat,
+        so every run of one task sits together. Each row gets an anchor the
+        per-task grid links to."""
+        order = {t: i for i, t in enumerate(targets or [])}
+        ordered = sorted(
+            run.results,
+            key=lambda r: (r.task_id, order.get(r.target, len(order)), r.target, r.repeat),
+        )
+        rows = []
+        prev_task = None
+        for i, r in enumerate(ordered):
             rows.append({
+                "anchor": f"run-{i}",
+                "first_of_task": r.task_id != prev_task,
+                "checks": self._checks_label(r.functional_result),
                 "task_id": r.task_id,
                 "target": r.target,
                 "status": r.status.value,
@@ -150,12 +303,17 @@ class HTMLReporter:
                 "error_message": r.error_message or "",
                 "functional_summary": r.functional_result.summary if r.functional_result else "",
                 "functional_checkpoints": r.functional_result.checkpoints if r.functional_result else {},
-                "functional_stdout": (r.functional_result.stdout[:1500] if r.functional_result else ""),
-                "functional_stderr": (r.functional_result.stderr[:1500] if r.functional_result else ""),
+                "functional_stdout": (
+                    _tail(r.functional_result.stdout, 1500) if r.functional_result else ""
+                ),
+                "functional_stderr": (
+                    _tail(r.functional_result.stderr, 1500) if r.functional_result else ""
+                ),
                 "agent_stdout": _clip_transcript(r.agent_stdout),
                 "agent_stderr": _clip_transcript(r.agent_stderr),
                 "workspace_path": r.workspace_path or "",
             })
+            prev_task = r.task_id
         return rows
 
     # ------------------------------------------------------------------
@@ -288,8 +446,12 @@ class HTMLReporter:
                 "error_message": r.error_message or "",
                 "functional_summary": r.functional_result.summary if r.functional_result else "",
                 "functional_checkpoints": r.functional_result.checkpoints if r.functional_result else {},
-                "functional_stdout": (r.functional_result.stdout[:1000] if r.functional_result else ""),
-                "functional_stderr": (r.functional_result.stderr[:1000] if r.functional_result else ""),
+                "functional_stdout": (
+                    _tail(r.functional_result.stdout, 1000) if r.functional_result else ""
+                ),
+                "functional_stderr": (
+                    _tail(r.functional_result.stderr, 1000) if r.functional_result else ""
+                ),
                 "spec_details": json.dumps(
                     r.spec_artifact_scores.details if r.spec_artifact_scores else {}, indent=2
                 ),

@@ -171,7 +171,8 @@ Verification: {{ r.functional_summary }}
 {%- endfor %}
 {%- elif not val.passed and val.failed is defined and val.failed %}
 {%- for t in val.failed %}
-      ✗ {{ t | replace('test_', '', 1) | replace('_', ' ') }}
+{%- set parts = t.split(': ', 1) %}
+      ✗ {{ parts[0] | replace('test_', '', 1) | replace('_', ' ') }}{% if parts | length > 1 %}: {{ parts[1] }}{% endif %}
 {%- endfor %}
 {%- endif %}
 {%- else %}

@@ -127,7 +127,7 @@ def test_task_id_filter(tmp_path, monkeypatch):
 
 
 def _make_tb_source(root):
-    """A minimal Terminal-Bench 2.x task tree usable as a task_sources path."""
+    """A minimal Terminal-Bench task tree usable as a task_sources path."""
     d = root / "tb" / "hello"
     (d / "tests").mkdir(parents=True)
     (d / "task.toml").write_text('version = "1.0"\n[environment]\ndocker_image = "ubuntu:22.04"\n')

@@ -1,7 +1,7 @@
 """
-Terminal-Bench importer (2.x / Harbor layout, with 1.x fallback).
+Terminal-Bench importer (Harbor layout, with a fallback for the older 1.x layout).
 
-Harbor task layout (Terminal-Bench 2.x)::
+Harbor task layout::
 
     <task>/
       task.toml            # version, [metadata], [verifier], [agent], [environment]
@@ -18,13 +18,37 @@ Terminal-Bench 1.x layout (fallback)::
       docker-compose.yaml / Dockerfile
 
 We emit a native ``vibe`` task whose Docker ``verify:`` block runs the task's own
-test script inside the task's environment image and scores from the reward file
-(``reward-file`` parser). See :mod:`agent_cost_bench.importers.base` for the
-bridging rationale.
+test script and scores from the reward file (``reward-file`` parser). Tasks
+with a shared verifier grade in the task's environment image; Terminal-Bench
+4.x tasks use a separate verifier (below). See
+:mod:`agent_cost_bench.importers.base` for the bridging rationale.
+
+Terminal-Bench 4.x (separate verifier)
+--------------------------------------
+TB 4.x tasks set ``[verifier] environment_mode = "separate"``: grading runs in
+its own image, built from ``tests/Dockerfile``, which carries the test
+dependencies and reference data. Only the paths the task lists in ``artifacts``
+are copied from the agent's environment into that image. For these tasks the
+importer:
+
+  * builds the grading image from ``tests/Dockerfile`` (not the agent's
+    ``environment/Dockerfile``, which lacks the test dependencies),
+  * seeds the files the agent image would have under ``/app`` into the
+    workspace's ``src/`` (files and directories), so ``src/`` stands for
+    ``/app``; other absolute paths map to ``src/_root/<path>``,
+  * copies only the declared ``artifacts`` from ``src/`` into the grading
+    container (symlinks that leave ``src/`` and setuid bits are dropped first,
+    as Harbor does),
+  * keeps a ``reward.json``-only score instead of replacing it with pass/fail,
+  * skips tasks this harness cannot run: docker-compose environments, GPU
+    tasks, and artifacts that come from a sidecar service.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
+import posixpath
 import re
 import shutil
 from pathlib import Path
@@ -43,57 +67,62 @@ _APP_DIR = "/app"  # where Harbor tasks conventionally expect the working tree
 _TESTS_DIR = "/tests"
 
 # ---------------------------------------------------------------------------
-# Harness-compatible task allowlist
+# Default task set
 # ---------------------------------------------------------------------------
 #
 # Many Terminal-Bench tasks assume the agent runs INSIDE the task container and
-# mutates its environment (install a package, build a binary into
-# /usr/local/bin, start a service). This framework runs the agent on the HOST
-# and only copies its produced files into a fresh container for grading, so
-# those tasks can never pass here regardless of the model — a harness
-# limitation, not a model result. Running the full 89-task suite therefore
-# produces many misleading "failures".
+# uses tools only that image provides, or need several containers or a GPU.
+# This framework runs the agent on the HOST, so those tasks fail here
+# regardless of the model — a harness limitation, not a model result.
 #
-# This is the set of tasks EMPIRICALLY CONFIRMED to grade correctly under the
-# host-agent model (i.e. pure file-producing tasks whose hidden tests check the
-# model's output files, not a mutated environment). It is used as the DEFAULT
-# task set when a `terminal-bench` task source is configured without an explicit
-# `tasks:` filter, so a default run is meaningful rather than dominated by
-# ungradeable tasks.
-#
-# HOW TO GROW THIS LIST (deliberately empirical, not guessed):
-#   Add a task's source name here only after a real run shows it grading
-#   correctly under this harness — i.e. it reaches a genuine pass/fail from its
-#   own hidden tests (model quality decides the score), NOT a harness error such
-#   as "binary not installed", "module not found", "no /app", or a service that
-#   never came up. A confirmed model FAILURE still means the task is gradeable
-#   and belongs here; only harness-incompatible tasks stay out.
-#
-# Entries are Terminal-Bench SOURCE task names (no `terminal-bench-` prefix).
-_TERMINAL_BENCH_SUPPORTED: tuple[str, ...] = (
-    # Confirmed gradeable from runs on 2026-09-09/10 (reached real hidden-test
-    # verdicts under the host-agent model): the task's own test suite collected
-    # and ran its tests against the model's OUTPUT — the score reflects model
-    # quality, not a harness/env failure. A confirmed model FAIL still qualifies
-    # (the task grades correctly); only env-mutation tasks (install a package,
-    # build a binary into a system path, need a running service) are excluded.
-    "break-filter-js-from-html",   # passed (Kiro)
-    "circuit-fibsqrt",             # passed (Kiro)
-    "code-from-image",             # passed (Kiro)
-    "count-dataset-tokens",        # passed (Kiro)
-    "cancel-async-tasks",          # tests ran (collected 6) — real verdict
-    "write-compressor",            # tests ran — real verdict
-    "bn-fit-modify",               # tests ran (collected 9), failed on missing
-                                   #   output file — real verdict on model output
-    "constraints-scheduling",      # tests ran (collected 3) — real verdict
-    "chess-best-move",             # tests ran, failed on wrong moves — real verdict
+# This list is the DEFAULT task set when a `terminal-bench` task source has no
+# explicit `tasks:` filter. Entries are Terminal-Bench 4.x source task names
+# (4.0 and 4.1 share the same 66 names; no `terminal-bench-` prefix). They were
+# picked by reading each task (2026-11): the inputs ship with the task and the
+# agent can write the graded artifacts on the host. The first 17 need only
+# Python / Node / a C++ compiler plus small pip packages; the rest were added
+# after EC2 runs and need tools from scripts/setup-terminal-bench-host.sh.
+# Remove an entry if a run ends in a harness error (e.g. "module
+# not found", "no /app") rather than a real pass/fail verdict; a model FAILURE
+# still means the task grades correctly and belongs here.
+_TERMINAL_BENCH_4_CANDIDATES: tuple[str, ...] = (
+    "cargo-flight-dispatch",
+    "embedding-drift-monitor",
+    "session-window-debug",
+    "wal-recovery-ordering",
+    # interleaved-vigenere is left out: its dev sample and word list are
+    # generated by a RUN step at image build time, so they can't be seeded.
+    "html-js-filter",
+    "sound-change-cascade",
+    "telecom-entity-resolution",
+    "production-planning",
+    "ontology-kg-querying",
+    "photonic-waveguide-routing",
+    "foodstuff-beta-activity",
+    "fin-saccr-rwa",
+    "glycan-ms2-elucidation",        # writes /results/... (mapped to src/_root/)
+    "protein-autointerp-disulfide",  # reads /root/data/... (mapped to src/_root/)
+    "mvcc-lsm-compaction",
+    "ks-solver-cpp",
+    "react-lead-form",
+    # Confirmed on EC2 (run 20261112_173247_89af40, Kiro CLI V3): each reached a
+    # real verdict from its own grader. Some need more than Python / Node / C++
+    # on the host, so run scripts/setup-terminal-bench-host.sh first.
+    "batched-eval-parity",           # numpy
+    "cad-model",                     # writes a STEP file; no CAD tools needed
+    "hof-topology-interpenetration",
+    "layout-config-recreation2",     # Pillow
+    "bun-sourcemap-leak",            # Bun
+    "music-harmony",                 # reads a sheet-music PDF
+    "roy-polymorph-cn",              # RDKit
+    "vba-userform-port",             # Node, Python, SQLite; /shared and /workspace paths
 )
 
 
 def terminal_bench_supported_tasks() -> tuple[str, ...]:
-    """Return the empirically-confirmed harness-compatible Terminal-Bench task
-    names (used as the default `tasks:` filter when none is given)."""
-    return _TERMINAL_BENCH_SUPPORTED
+    """Return the default Terminal-Bench 4.x task names (used as the `tasks:`
+    filter when none is given). Names missing from a source are skipped."""
+    return _TERMINAL_BENCH_4_CANDIDATES
 
 
 def is_terminal_bench_task(task_dir: Path) -> bool:
@@ -203,6 +232,10 @@ def convert_terminal_bench_task(source_dir: Path, dest_dir: Path, native_id: str
             raise ImportError_(f"{source_dir.name}: could not parse task.toml: {e}") from e
 
     instruction = _load_instruction(source_dir, toml_meta)
+    if _verifier_mode(toml_meta) == "separate":
+        return _convert_separate_verifier_task(
+            source_dir, dest_dir, native_id, toml_meta, instruction
+        )
     image, buildable, warnings = _resolve_image(source_dir, toml_meta)
     task_minutes, verify_timeout = _timeouts(toml_meta)
     test_rel = _test_script_relpath(source_dir)
@@ -257,26 +290,7 @@ def convert_terminal_bench_task(source_dir: Path, dest_dir: Path, native_id: str
         f'cp -r "$TESTS_RO/." "{_TESTS_DIR}/" 2>/dev/null || true',
         f'cp -r "$TESTS_RO/." "{_APP_DIR}/tests/" 2>/dev/null || cp -r "$TESTS_RO/." "{_APP_DIR}/"',
     ]
-    # test_cmd: run the task's own test script ONCE, publish reward.
-    # Resolve the script path first (prefer /tests, then /app/tests, then /app)
-    # and run exactly that — chaining with `||` would wrongly re-run the suite at
-    # another path on a genuine test failure and mask the real exit code. Harbor
-    # scripts write /logs/verifier/reward.txt; TB 1.x rely on the exit code, so
-    # we honor an explicit reward file if present else synthesize one, then copy
-    # it to $RESULTS_DIR.
-    test_cmd = (
-        f'cd "{_APP_DIR}"; mkdir -p /logs/verifier; '
-        f'for p in "{_TESTS_DIR}/{test_rel}" "{_APP_DIR}/tests/{test_rel}" "{_APP_DIR}/{test_rel}"; do '
-        f'  if [ -f "$p" ]; then ts="$p"; break; fi; '
-        f'done; '
-        f'bash "${{ts:-{_TESTS_DIR}/{test_rel}}}" 2>&1; '
-        f'ec=$?; '
-        f'if [ ! -s /logs/verifier/reward.txt ]; then '
-        f'  if [ $ec -eq 0 ]; then echo 1 > /logs/verifier/reward.txt; '
-        f'  else echo 0 > /logs/verifier/reward.txt; fi; fi; '
-        f'cp /logs/verifier/reward.txt "$RESULTS_DIR/reward.txt" 2>/dev/null || true; '
-        f'exit $ec'
-    )
+    test_cmd = _test_cmd(test_rel)
 
     verify_block: dict = {
         "image": image,
@@ -317,6 +331,527 @@ def convert_terminal_bench_task(source_dir: Path, dest_dir: Path, native_id: str
         source_id=source_dir.name, native_id=native_id, dest_dir=dest_dir,
         image=image, warnings=warnings,
     )
+
+
+def _test_cmd(test_rel: str, env: dict | None = None) -> str:
+    """Shell command that runs the task's own test script ONCE and publishes
+    its reward to ``$RESULTS_DIR``.
+
+    The script path is resolved first (prefer /tests, then /app/tests, then
+    /app) and run exactly once — chaining with `||` would wrongly re-run the
+    suite at another path on a genuine test failure and mask the real exit
+    code. Harbor scripts write /logs/verifier/reward.txt or reward.json; TB 1.x
+    rely on the exit code, so a reward is synthesized from the exit code only
+    when the script wrote neither file. ``env`` holds the task's
+    ``[verifier.env]`` variables.
+    """
+    exports = "".join(
+        f"export {k}={_sh_single_quote(str(v))}; "
+        for k, v in (env or {}).items()
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(k))
+    )
+    return (
+        f'cd "{_APP_DIR}"; mkdir -p /logs/verifier; {exports}'
+        f'for p in "{_TESTS_DIR}/{test_rel}" "{_APP_DIR}/tests/{test_rel}" '
+        f'"{_APP_DIR}/{test_rel}"; do '
+        f'  if [ -f "$p" ]; then ts="$p"; break; fi; '
+        f'done; '
+        f'bash "${{ts:-{_TESTS_DIR}/{test_rel}}}" 2>&1; '
+        f'ec=$?; '
+        f'if [ ! -s /logs/verifier/reward.txt ] && [ ! -s /logs/verifier/reward.json ]; then '
+        f'  if [ $ec -eq 0 ]; then echo 1 > /logs/verifier/reward.txt; '
+        f'  else echo 0 > /logs/verifier/reward.txt; fi; fi; '
+        # ctrf.json holds the per-check names, statuses and failure messages;
+        # many TB 4.x graders print nothing else, so the report reads it.
+        # Copy with `cat >` (not cp) and make the copies world-readable: some
+        # graders `chmod 400` their reward file, and on a Linux host the copy
+        # stays root-owned, so the harness user couldn't read it.
+        f'for f in reward.txt reward.json ctrf.json; do '
+        f'  if [ -s "/logs/verifier/$f" ]; then '
+        f'    cat "/logs/verifier/$f" > "$RESULTS_DIR/$f"; chmod a+r "$RESULTS_DIR/$f"; '
+        f'  fi; '
+        f'done; '
+        # A subshell exit sets $? without ending the verify wrapper, so its
+        # own `chmod -R a+rwX $RESULTS_DIR` cleanup still runs.
+        f'( exit $ec )'
+    )
+
+
+def _sh_single_quote(value: str) -> str:
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
+# ---------------------------------------------------------------------------
+# Terminal-Bench 4.x: separate verifier environment
+# ---------------------------------------------------------------------------
+
+# Workspace folder (inside src/) that stands for "/" for paths outside /app,
+# e.g. /results/output.json <-> src/_root/results/output.json.
+_ROOT_PREFIX = "_root"
+# Upper bound on input files seeded into a workspace, so one task with a huge
+# data directory can't fill the disk on every run.
+_MAX_SEED_BYTES = 500 * 1024 * 1024
+# Artifact paths are interpolated into shell commands; accept only plain paths.
+_SAFE_PATH = re.compile(r"^/[A-Za-z0-9_./@+-]*$")
+
+
+def _verifier_mode(toml_meta: dict) -> str:
+    """Harbor's mode resolution: "separate" when ``environment_mode`` says so,
+    or when it is omitted and a ``[verifier.environment]`` table is present."""
+    ver = toml_meta.get("verifier", {}) if isinstance(toml_meta, dict) else {}
+    if not isinstance(ver, dict):
+        return "shared"
+    mode = ver.get("environment_mode")
+    if mode == "separate":
+        return "separate"
+    if mode is None and isinstance(ver.get("environment"), dict):
+        return "separate"
+    return "shared"
+
+
+def _artifact_entries(toml_meta: dict) -> list[dict]:
+    """Normalize ``artifacts`` (strings or ``{source, service, ...}`` tables)."""
+    raw = toml_meta.get("artifacts", []) if isinstance(toml_meta, dict) else []
+    out: list[dict] = []
+    for a in raw if isinstance(raw, list) else []:
+        if isinstance(a, str):
+            out.append({"source": a})
+        elif isinstance(a, dict) and isinstance(a.get("source"), str):
+            out.append(a)
+    return out
+
+
+_PY_SCRIPT_RUN = re.compile(r"\bpython3?(?:\.\d+)?\s+(?:-[A-Za-z]+\s+)*([\w./-]+\.py)\b")
+
+
+def _build_time_input_evidence(dockerfile_text: str) -> str | None:
+    """Evidence that the agent image's ``/app`` is filled in while the image is
+    built, or None.
+
+    This harness seeds the workspace from the Dockerfile's ``COPY`` lines. It
+    cannot reproduce files a build step creates, so a task like that would start
+    the agent without its inputs (observed: the agent reports "the workspace is
+    empty", then invents its own data) and the score would say nothing about the
+    model. Two patterns give it away:
+
+      * the final stage copies ``/app`` content from an earlier build stage
+        (``COPY --from=builder /app/checkpoints /app/checkpoints``), or
+      * the final stage runs a Python script in a ``RUN`` step
+        (``RUN python gen_shards.py``) that generates the data.
+
+    Plain decompression, ``chmod``, ``pip``/``uv`` installs and the like are not
+    flagged, because the agent can reproduce those from the files it is given.
+    """
+    joined = re.sub(r"\\\s*\n", " ", dockerfile_text)
+    # Split into build stages: [(name or None, [instruction lines])].
+    stages: list[tuple[str | None, list[str]]] = []
+    for line in joined.splitlines():
+        s = line.strip()
+        m = re.match(r"^FROM\s+\S+(?:\s+AS\s+(\S+))?", s, re.I)
+        if m:
+            stages.append((m.group(1).lower() if m.group(1) else None, []))
+        elif stages:
+            stages[-1][1].append(s)
+    if not stages:
+        return None
+    earlier_names = {name for name, _ in stages[:-1] if name}
+    for s in stages[-1][1]:
+        copy = re.match(r"^COPY\s+--from=(\S+)\s+(\S+)", s, re.I)
+        if copy and copy.group(1).lower() in earlier_names and copy.group(2).startswith("/app"):
+            return f"it copies {copy.group(2)} from the build stage '{copy.group(1)}'"
+        if re.match(r"^RUN\b", s, re.I):
+            script = _PY_SCRIPT_RUN.search(s)
+            if script:
+                return f"its image build runs {script.group(1)} to generate files"
+    return None
+
+
+def _unsupported_reason(source_dir: Path, toml_meta: dict) -> str | None:
+    """Why this harness can't run the task, or None if it can."""
+    for rel in ("environment/docker-compose.yaml", "environment/docker-compose.yml",
+                "tests/docker-compose.yaml", "tests/docker-compose.yml"):
+        if (source_dir / rel).is_file():
+            return "needs a docker-compose (multi-container) environment"
+    env = toml_meta.get("environment", {}) or {}
+    venv = (toml_meta.get("verifier", {}) or {}).get("environment", {}) or {}
+    for table in (env, venv):
+        if isinstance(table, dict) and (table.get("gpus") or 0) > 0:
+            return "needs a GPU"
+    for a in _artifact_entries(toml_meta):
+        if a.get("service"):
+            return f"artifact {a['source']} comes from sidecar service '{a['service']}'"
+    collect = (toml_meta.get("verifier", {}) or {}).get("collect")
+    if collect:
+        # [[verifier.collect]] runs a command in the agent's container after the
+        # agent finishes (e.g. `git diff` to build /tmp/agent.patch). There is
+        # no such container here, so the collected artifact never exists.
+        return "its grader collects output by running a command in the agent's container"
+    dockerfile = source_dir / "environment" / "Dockerfile"
+    if dockerfile.is_file():
+        evidence = _build_time_input_evidence(dockerfile.read_text(errors="replace"))
+        if evidence:
+            return (
+                f"its input files are created while the task image is built ({evidence}), "
+                "so the agent would start without them"
+            )
+    return None
+
+
+def _to_src_rel(abs_path: str) -> str:
+    """Map an absolute container path to a path relative to the workspace's
+    ``src/``: ``/app/x`` -> ``x``, ``/app`` -> ``""``, ``/r/x`` -> ``_root/r/x``."""
+    p = posixpath.normpath(abs_path)
+    if p == _APP_DIR:
+        return ""
+    if p.startswith(_APP_DIR + "/"):
+        return p[len(_APP_DIR) + 1:]
+    return f"{_ROOT_PREFIX}/{p.lstrip('/')}"
+
+
+def _workspace_path(abs_path: str) -> str:
+    rel = _to_src_rel(abs_path)
+    return f"src/{rel}" if rel else "src/"
+
+
+def _tree_digest(root: Path) -> str:
+    """Short content hash of a directory, used to tag a built image so a
+    changed task (e.g. 4.0 -> 4.1) never reuses a stale image."""
+    h = hashlib.sha256()
+    for p in sorted(root.rglob("*")):
+        if p.is_file():
+            h.update(p.relative_to(root).as_posix().encode())
+            h.update(b"\0")
+            h.update(p.read_bytes())
+    return h.hexdigest()[:12]
+
+
+def _x86_only(tests_dir: Path) -> bool:
+    """True when the grader bundles Python wheels built only for x86_64.
+
+    Such a grader (e.g. ks-solver-cpp's numpy/scipy wheels) crashes on an ARM
+    Docker host before it checks anything, so its image must be built and run
+    as linux/amd64. Docker emulates that on ARM; on x86_64 it's a no-op."""
+    wheels = [p.name.lower() for p in tests_dir.rglob("*.whl")]
+    arch_wheels = [w for w in wheels if "x86_64" in w or "aarch64" in w or "arm64" in w]
+    return bool(arch_wheels) and not any("aarch64" in w or "arm64" in w for w in arch_wheels)
+
+
+def _resolve_verifier_image(
+    source_dir: Path, toml_meta: dict
+) -> tuple[str | None, str | None, list[str]]:
+    """Return (image, build_context, warnings) for a separate verifier, in
+    Harbor's priority order: [verifier.environment].docker_image, then
+    tests/Dockerfile, then the agent environment's image or Dockerfile."""
+    venv = (toml_meta.get("verifier", {}) or {}).get("environment", {}) or {}
+    if isinstance(venv, dict) and venv.get("docker_image"):
+        return str(venv["docker_image"]), None, []
+    tests_dir = source_dir / "tests"
+    if (tests_dir / "Dockerfile").is_file():
+        tag = f"tb-{source_dir.name.lower()}-verifier:{_tree_digest(tests_dir)}"
+        if _x86_only(tests_dir):
+            # Separate tag so an image built earlier for the host's own
+            # architecture is never reused for the x86_64 build.
+            tag += "-amd64"
+        return tag, "verify/tests", []
+    image, buildable, warnings = _resolve_image(source_dir, toml_meta)
+    return image, ("verify/environment" if buildable else None), warnings
+
+
+def _convert_separate_verifier_task(
+    source_dir: Path, dest_dir: Path, native_id: str, toml_meta: dict, instruction: str
+) -> ImportedTask:
+    """Convert a TB 4.x task whose grading runs in its own verifier image."""
+    reason = _unsupported_reason(source_dir, toml_meta)
+    if reason:
+        # No task.yaml is written, so discovery never picks the task up; the
+        # warning tells the operator why it was skipped.
+        (dest_dir / "UNSUPPORTED.txt").write_text(
+            f"Not imported: {reason}.\n", encoding="utf-8"
+        )
+        return ImportedTask(
+            source_id=source_dir.name, native_id=native_id, dest_dir=dest_dir,
+            image=None, warnings=[f"skipped, not runnable by this harness: {reason}"],
+        )
+
+    image, build_context, warnings = _resolve_verifier_image(source_dir, toml_meta)
+    task_minutes, verify_timeout = _timeouts(toml_meta)
+    test_rel = _test_script_relpath(source_dir)
+
+    # Tests: mounted read-only at $TESTS_RO, and the build context of the
+    # dedicated verifier image (whose Dockerfile does `COPY . /tests/`).
+    copy_tree_into(source_dir / "tests", dest_dir / "verify" / "tests")
+    if build_context == "verify/environment":
+        copy_tree_into(source_dir / "environment", dest_dir / "verify" / "environment")
+    sol_src = source_dir / "solution"
+    if sol_src.is_dir():
+        copy_tree_into(sol_src, dest_dir / "reference")
+
+    # Inputs go into the src/ fixture, which the sandbox copies into the
+    # workspace's src/ (directories included). Only declared artifacts are
+    # copied back out, so a modified input can't overwrite the grader's copy.
+    seeded, seed_warnings = _seed_separate_inputs(source_dir, dest_dir / "src", instruction)
+    warnings += seed_warnings
+    # Always give the workspace a src/ (= /app), even when the task ships no
+    # input files (e.g. html-js-filter). The prompt tells the agent src/ is
+    # /app, and grading then runs on whatever the agent left there instead of
+    # stopping with "No src/ in workspace".
+    (dest_dir / "src").mkdir(parents=True, exist_ok=True)
+
+    artifacts: list[str] = []
+    for a in _artifact_entries(toml_meta):
+        path = posixpath.normpath(a["source"])
+        if not _SAFE_PATH.match(path) or ".." in path.split("/"):
+            warnings.append(f"artifact path {a['source']!r} not supported; ignored")
+            continue
+        artifacts.append(path)
+
+    setup = [
+        f'mkdir -p "{_APP_DIR}" "{_TESTS_DIR}" /logs/verifier',
+        # Dedicated verifier images bake the tests in; stage the mounted copy
+        # only when they're missing (the agent-image fallback).
+        f'[ -f "{_TESTS_DIR}/{test_rel}" ] || '
+        f'cp -r "$TESTS_RO/." "{_TESTS_DIR}/" 2>/dev/null || true',
+        # Sanitize like Harbor: drop symlinks that point outside src/ and
+        # setuid/setgid bits, so an artifact can't reach the grader's files.
+        'find "$BUILD/src" -type l | while IFS= read -r l; do '
+        't=$(readlink -f "$l" || true); '
+        'case "$t" in "$BUILD/src"|"$BUILD/src"/*) ;; *) rm -f "$l" ;; esac; done',
+        'chmod -R ug-s "$BUILD/src" 2>/dev/null || true',
+    ]
+    if artifacts:
+        for path in artifacts:
+            rel = _to_src_rel(path)
+            if not rel:
+                setup.append(
+                    f'cp -r "$BUILD/src/." "{_APP_DIR}/" && rm -rf "{_APP_DIR}/{_ROOT_PREFIX}"'
+                )
+                continue
+            s = f"$BUILD/src/{rel}"
+            setup.append(
+                f'if [ -d "{s}" ]; then mkdir -p "{path}" && cp -r "{s}/." "{path}/"; '
+                f'elif [ -e "{s}" ]; then '
+                f'mkdir -p "{posixpath.dirname(path)}" && cp "{s}" "{path}"; fi'
+            )
+    else:
+        # No declared artifacts: fall back to copying the whole of src/ to /app.
+        setup.append(f'cp -r "$BUILD/src/." "{_APP_DIR}/" 2>/dev/null || true')
+
+    ver_env = (toml_meta.get("verifier", {}) or {}).get("env", {}) or {}
+    verify_block: dict = {
+        "image": image,
+        "parser": "reward-file",
+        "workdir": "",
+        "tests_subdir": "verify/tests",
+        "setup": setup,
+        "test_cmd": _test_cmd(test_rel, ver_env if isinstance(ver_env, dict) else None),
+        # Same reasoning as the shared-mode block: test scripts may fetch deps.
+        "network": "bridge",
+    }
+    if build_context:
+        verify_block["build_context"] = build_context
+    if build_context == "verify/tests":
+        verify_block["dedicated_image"] = True
+        if _x86_only(source_dir / "tests"):
+            verify_block["platform"] = "linux/amd64"
+    if verify_timeout:
+        verify_block["timeout_seconds"] = verify_timeout
+
+    task_yaml = {
+        "id": native_id,
+        "mode": "vibe",
+        "description": _first_line(instruction),
+        "timeout_minutes": task_minutes,
+        "functional_pass_threshold": 0.99,
+        "prompt": _build_separate_prompt(instruction, artifacts, seeded),
+        "verify": verify_block,
+    }
+    _write_task_yaml(
+        dest_dir / "task.yaml", task_yaml, source="Terminal-Bench 4.x", warnings=warnings
+    )
+    return ImportedTask(
+        source_id=source_dir.name, native_id=native_id, dest_dir=dest_dir,
+        image=image, warnings=warnings,
+    )
+
+
+def _final_stage_copies(
+    dockerfile_text: str,
+) -> tuple[list[tuple[list[str], str, str]], set[str]]:
+    """Return ((sources, dest, workdir) per build-context COPY/ADD, removed)
+    for the Dockerfile's FINAL stage. Earlier stages are builders whose files
+    the agent never sees (e.g. a hidden reference source compiled into a
+    binary). ``removed`` holds the operands of later ``rm`` commands, so a file
+    the image copies in, runs, and deletes (e.g. a challenge generator) is not
+    handed to the agent."""
+    joined = re.sub(r"\\\s*\n", " ", dockerfile_text)
+    stage: list[tuple[list[str], str, str]] = []
+    removed: set[str] = set()
+    workdir = "/"
+    for line in joined.splitlines():
+        s = line.strip()
+        if re.match(r"^FROM\b", s, re.I):
+            stage, removed, workdir = [], set(), "/"
+            continue
+        m = re.match(r"^WORKDIR\s+(\S+)", s, re.I)
+        if m:
+            workdir = posixpath.normpath(posixpath.join(workdir, m.group(1)))
+            continue
+        if re.match(r"^RUN\b", s, re.I):
+            for cmd in re.split(r"&&|;|\|\|", s[3:]):
+                words = cmd.split()
+                if words and words[0] == "rm":
+                    for w in words[1:]:
+                        if not w.startswith("-"):
+                            removed.add(posixpath.normpath(posixpath.join(workdir, w)))
+            continue
+        if not re.match(r"^(COPY|ADD)\b", s, re.I):
+            continue
+        rest = s.split(None, 1)[1] if len(s.split(None, 1)) > 1 else ""
+        tokens = rest.split()
+        if any(t.lower().startswith("--from=") for t in tokens):
+            continue
+        tokens = [t for t in tokens if not t.startswith("--")]
+        if tokens and tokens[0].startswith("["):
+            try:
+                tokens = [str(t) for t in json.loads(" ".join(tokens))]
+            except ValueError:
+                continue
+        if len(tokens) < 2:
+            continue
+        stage.append((tokens[:-1], tokens[-1], workdir))
+    return stage, removed
+
+
+def _mentioned_outside_app(dest: str, instruction: str) -> bool:
+    """True if the instruction names ``dest`` or one of its parent directories
+    (at least two levels deep, e.g. /root/data), so the agent is expected to
+    read files there."""
+    parts = dest.strip("/").split("/")
+    for i in range(len(parts), 1, -1):
+        if "/" + "/".join(parts[:i]) in instruction:
+            return True
+    return False
+
+
+def _seed_separate_inputs(
+    source_dir: Path, src_fixture: Path, instruction: str
+) -> tuple[list[str], list[str]]:
+    """Copy what the agent image's Dockerfile places under /app (and under
+    other paths the instruction names) into the ``src/`` fixture, keeping
+    the container layout. Returns (workspace paths seeded, warnings)."""
+    env_dir = source_dir / "environment"
+    dockerfile = env_dir / "Dockerfile"
+    if not dockerfile.is_file():
+        return [], []
+    text = dockerfile.read_text(encoding="utf-8", errors="replace")
+    context = env_dir.resolve()
+    skip_at_root = {"Dockerfile", ".dockerignore", "docker-compose.yaml", "docker-compose.yml"}
+
+    seeded: list[str] = []
+    warnings: list[str] = []
+    total = 0
+
+    copies, removed = _final_stage_copies(text)
+
+    def _place(src: Path, container_path: str) -> None:
+        nonlocal total
+        p = posixpath.normpath(container_path)
+        if p in removed:
+            return  # deleted later in the build; not part of the agent's image
+        under_app = p == _APP_DIR or p.startswith(_APP_DIR + "/")
+        if not under_app and not _mentioned_outside_app(p, instruction):
+            return
+        if src.is_dir():
+            size = sum(f.stat().st_size for f in src.rglob("*") if f.is_file())
+        else:
+            size = src.stat().st_size
+        if total + size > _MAX_SEED_BYTES:
+            warnings.append(
+                f"input {src.name} not seeded: over the "
+                f"{_MAX_SEED_BYTES // 2**20} MB seed limit"
+            )
+            return
+        total += size
+        target = src_fixture / _to_src_rel(p) if _to_src_rel(p) else src_fixture
+        if src.is_dir():
+            copy_tree_into(src, target)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, target)
+        seeded.append(_workspace_path(p))
+
+    for sources, dest, workdir in copies:
+        if "$" in dest:
+            continue
+        dest_abs = posixpath.normpath(
+            dest if dest.startswith("/") else posixpath.join(workdir, dest)
+        )
+        dest_is_dir = (
+            dest.endswith("/") or dest in (".", "./") or len(sources) > 1
+            or dest_abs in (workdir, _APP_DIR)
+        )
+        for pattern in sources:
+            if pattern.startswith(("http://", "https://")) or "$" in pattern:
+                continue
+            if any(c in pattern for c in "*?["):
+                matches = sorted(context.glob(pattern))
+            else:
+                matches = [context / pattern]
+            for cand in matches:
+                cand = cand.resolve()
+                try:
+                    cand.relative_to(context)
+                except ValueError:
+                    continue  # escapes the build context
+                if not cand.exists():
+                    continue
+                if cand.is_dir():
+                    # COPY <dir> <dest> copies the directory's CONTENTS.
+                    for child in sorted(cand.iterdir()):
+                        if cand == context and child.name in skip_at_root:
+                            continue
+                        _place(child, posixpath.join(dest_abs, child.name))
+                    continue
+                file_dest = dest_abs
+                if dest_is_dir or (
+                    "." not in posixpath.basename(dest_abs) and "." in cand.name
+                ):
+                    file_dest = posixpath.join(dest_abs, cand.name)
+                _place(cand, file_dest)
+    return seeded, warnings
+
+
+def _build_separate_prompt(instruction: str, artifacts: list[str], seeded: list[str]) -> str:
+    lines = [
+        instruction,
+        "",
+        "---",
+        "How this benchmark runs the task: you work in a local workspace instead "
+        "of the task's container, and a separate container grades your results.",
+        "",
+        "- The `src/` directory in your workspace stands for `/app`. A path "
+        "`/app/x` in the task means `src/x`.",
+        f"- Any other absolute path `/dir/x` means `src/{_ROOT_PREFIX}/dir/x` "
+        f"(for example `/results/output.json` is `src/{_ROOT_PREFIX}/results/output.json`).",
+    ]
+    if seeded:
+        lines.append(
+            "- The files the task provides are already in place at those locations. "
+            "Read them there; do not search the filesystem for them."
+        )
+    if artifacts:
+        lines.append(
+            "- Only these paths are copied into the grading container, so your "
+            "final results must be at these workspace locations:"
+        )
+        lines += [f"  - `{a}` -> `{_workspace_path(a)}`" for a in artifacts]
+        lines.append(
+            "- A directory in that list is copied with everything in it, so it "
+            "must hold the complete final version, including files you did not change."
+        )
+    else:
+        lines.append("- Everything under `src/` is copied to `/app` in the grading container.")
+    return "\n".join(lines)
 
 
 def _parse_dockerfile_copy_sources(dockerfile_text: str) -> list[str]:
@@ -420,6 +955,9 @@ def _build_prompt(instruction: str, *, seeded_inputs: list[str] | None = None) -
 
 
 def _first_line(text: str) -> str:
+    # Drop HTML comments first: TB 4.x instructions start with a
+    # "<!-- harbor-canary GUID ... -->" marker that isn't a description.
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
     for line in text.splitlines():
         s = line.strip().lstrip("#").strip()
         if s:
