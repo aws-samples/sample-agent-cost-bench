@@ -472,6 +472,45 @@ Things to watch when raising parallelism:
 - **API rate limits and spend.** More parallel runs means more simultaneous requests and faster
   credit use.
 
+### Running a reproducible comparison
+
+A cross-CLI comparison is only as fair as its conditions. The harness does not enforce the points
+below; check them before a run whose numbers you plan to share.
+
+- **Run on a disposable, isolated host.** Every runner auto-approves tool calls
+  (`--trust-all-tools`, `--dangerously-skip-permissions`, `--allow-all-tools`, …), so an agent can
+  read and run anything the benchmark user can. Use a throwaway VM or cloud instance that holds no
+  credentials or data you care about, and remember that files an agent reads are sent to that
+  CLI's model provider. The [Devin section](#devin-specifics) explains why a permission policy is
+  not a boundary.
+- **Make sure no CLI loads MCP servers.** MCP tool definitions add context, and therefore cost, to
+  one CLI and not the others. Check each CLI's own configuration:
+  - Kiro can still start servers from the global `~/.kiro/settings/mcp.json` even when the agent
+    you pass declares none. A host without that file is the reliable option.
+  - Codex reads `[mcp_servers.*]` from `$CODEX_HOME/config.toml` (default `~/.codex`). Disable a
+    server for the run with `-c mcp_servers.<name>.enabled=false`, or point `CODEX_HOME` at a clean
+    directory through the runner's `env:` block.
+  - Copilot enables its built-in GitHub MCP server unless you pass `--disable-builtin-mcps`.
+  - Claude Code: check `claude mcp list` on the host.
+- **Keep CLI versions fixed and repeats independent.** Disable self-updates so a CLI cannot change
+  version mid-run, and record each CLI's version with the results. For Kiro, run
+  `kiro-cli settings app.disableAutoupdates true` and `kiro-cli settings memory.mode disabled`, so
+  no run can read memories written by an earlier one. For Copilot, pass `--no-auto-update`; its
+  memory is off by default in `-p` mode.
+- **Start Kiro once before a parallel run on a fresh host.** The first kiro-cli V3 launch installs
+  its engine, and several Kiro runners starting at that moment can fail to spawn it. A one-task
+  smoke run first avoids this.
+- **Smoke-test every runner on one task.** `--task <id> --repeats 1` confirms that each runner
+  reports a cost and that each model ID is valid. Plans differ in which models they include: in
+  Copilot, `/model` lists what your plan allows, and an excluded model fails with "not available".
+- **Use at least 3 repeats.** Agent runs are not deterministic. The same task can cost several
+  times more on one repeat than on another, and a single run can overstate the gap between CLIs.
+  With `repeats: 3` or more, the report's pass@k, pass^k and confidence intervals become
+  meaningful.
+- **Compare durations on wall-clock time.** When a CLI reports its own duration, the harness shows
+  that figure instead of the wall-clock time, and CLIs do not measure the same thing. For latency
+  comparisons, use each run's `duration_seconds` in the JSON results.
+
 ### Useful commands
 
 ```bash
