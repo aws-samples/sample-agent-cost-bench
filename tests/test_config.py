@@ -66,6 +66,48 @@ def test_cli_compare_config_loads_and_keeps_per_runner_cost(tmp_path, monkeypatc
     assert "t-spec" not in ids
 
 
+def _threshold_config(tmp_path, tasks_dir, extra=""):
+    return load_cli_compare_config(_write(
+        tmp_path / "cli.yaml",
+        f"""
+        runners:
+          - name: kiro
+            cli_path: kiro
+            model_id: m
+            cost_source: kiro_credits
+        tasks_dir: {tasks_dir}
+        {extra}
+        """,
+    ))
+
+
+def test_config_functional_pass_threshold_applies_to_tasks_without_their_own(tmp_path, monkeypatch):
+    """The run-level key used to be silently ignored: every task fell back to
+    TaskConfig's 0.99 default whatever the config said."""
+    monkeypatch.chdir(tmp_path)
+    tasks_dir = _make_tasks(tmp_path)
+    cfg = _threshold_config(tmp_path, tasks_dir, "functional_pass_threshold: 0.6")
+    (task,) = discover_tasks(cfg)
+    assert task.functional_pass_threshold == 0.6
+
+
+def test_task_yaml_functional_pass_threshold_wins_over_config(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    tasks_dir = _make_tasks(tmp_path)
+    yaml_path = tmp_path / "tasks" / "vibe" / "t-vibe" / "task.yaml"
+    yaml_path.write_text(yaml_path.read_text() + "functional_pass_threshold: 0.75\n")
+    cfg = _threshold_config(tmp_path, tasks_dir, "functional_pass_threshold: 0.6")
+    (task,) = discover_tasks(cfg)
+    assert task.functional_pass_threshold == 0.75
+
+
+def test_functional_pass_threshold_defaults_to_099(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    tasks_dir = _make_tasks(tmp_path)
+    (task,) = discover_tasks(_threshold_config(tmp_path, tasks_dir))
+    assert task.functional_pass_threshold == 0.99
+
+
 def test_model_compare_config_gets_kiro_defaults(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     tasks_dir = _make_tasks(tmp_path)
