@@ -1,0 +1,13 @@
+version = "1.0"
+
+[agent]
+timeout_sec = 180.0
+
+[environment]
+# EC2 cold starts include VM launch, Docker bootstrap, and Compose startup.
+build_timeout_sec = 900.0
+
+[verifier]
+# Harbor includes remote setup commands and reward collection in this budget.
+timeout_sec = 180.0
+environment_mode = "separate"

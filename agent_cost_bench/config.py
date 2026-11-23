@@ -71,6 +71,7 @@ def _read_yaml(config_path: str | Path) -> dict[str, Any]:
 
 # Fields that map straight from YAML onto BenchConfig (shared by both schemas).
 _PASSTHROUGH = {
+    "execution",
     "effort",
     "concurrency",
     "max_concurrency",
@@ -110,6 +111,11 @@ def _parse_task_sources(raw: dict[str, Any]) -> list[TaskSourceSpec]:
     for i, entry in enumerate(entries):
         if not isinstance(entry, dict):
             raise ValueError(f"task_sources[{i}] must be a mapping with 'type' and 'path'")
+        if str(entry.get("type", "")).strip().lower() == "harbor":
+            extra = entry.keys() - {"type", "path", "tasks", "mode", "timeout_minutes", "enabled"}
+            if extra:
+                raise ValueError(f"Unsupported Harbor task source fields: {', '.join(sorted(extra))}")
+            entry = {**entry, "type": "harbor"}
         try:
             specs.append(TaskSourceSpec(**entry))
         except ValidationError as e:
@@ -367,6 +373,44 @@ def _scan_task_root(root: Path, config: BenchConfig) -> list[TaskConfig]:
     return found
 
 
+def _discover_harbor_tasks(config: BenchConfig) -> list[TaskConfig]:
+    """Reference tasks in place; never copy their environment, tests or solution."""
+    tasks: dict[str, TaskConfig] = {}
+    for source in config.task_sources:
+        if not source.enabled:
+            continue
+        root = Path(source.path).expanduser().resolve()
+        if not root.is_dir():
+            raise ValueError(f"Harbor task source is not a directory: {root}")
+        candidates = [root] if (root / "task.toml").is_file() else sorted(root.iterdir())
+        by_name = {
+            path.name: path for path in candidates
+            if path.is_dir() and (path / "task.toml").is_file()
+        }
+        missing = set(source.tasks) - by_name.keys()
+        if missing:
+            raise ValueError(f"Harbor tasks not found in {root}: {', '.join(sorted(missing))}")
+        if not by_name:
+            raise ValueError(f"No Harbor task directories with task.toml in {root}")
+        for name, path in by_name.items():
+            if source.tasks and name not in source.tasks:
+                continue
+            if config.task_ids and name not in config.task_ids:
+                continue
+            if name in tasks:
+                raise ValueError(f"Duplicate Harbor task id '{name}'; task directory names must be unique")
+            tasks[name] = TaskConfig(
+                id=name,
+                task_dir=path.resolve(),
+                harbor_source=str(root),
+                harbor_timeout_minutes=source.timeout_minutes,
+                functional_pass_threshold=config.functional_pass_threshold,
+            )
+    if not tasks:
+        raise ValueError("No Harbor tasks match the configured filters")
+    return list(tasks.values())
+
+
 def discover_tasks(config: BenchConfig) -> list[TaskConfig]:
     """
     Load all task.yaml files from the active task root and apply task-id and
@@ -378,6 +422,9 @@ def discover_tasks(config: BenchConfig) -> list[TaskConfig]:
     a Terminal-Bench run isn't diluted by this repo's sample tasks. Without any
     ``task_sources`` the local ``tasks_dir`` is used as before.
     """
+    if config.execution.backend == "harbor":
+        return _discover_harbor_tasks(config)
+
     tasks_root = Path(config.tasks_dir).expanduser().resolve()
 
     # External benchmarks are exclusive: when any enabled task_source is

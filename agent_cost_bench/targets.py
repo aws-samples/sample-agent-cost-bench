@@ -176,6 +176,11 @@ def make_cli_target(entry: dict[str, Any], *, comparison_label: str | None = Non
         raise ValueError(f"runner '{entry['name']}' requires a 'cli_path'")
     if "model_id" not in entry:
         raise ValueError(f"runner '{entry['name']}' requires a 'model_id'")
+    if "execution" in entry:
+        raise ValueError(
+            "execution is a top-level setting, but you can override `harbor` settings for "
+            "individual runners"
+        )
 
     pricing_raw = entry.get("pricing") or {}
 
@@ -205,6 +210,7 @@ def make_cli_target(entry: dict[str, Any], *, comparison_label: str | None = Non
         token_regex=entry.get("token_regex"),
         capabilities=TargetCapabilities(**caps_raw),
         env=dict(entry.get("env", {})),
+        harbor=entry.get("harbor"),
         enabled=bool(entry.get("enabled", True)),
         comparison_label=comparison_label,
     )

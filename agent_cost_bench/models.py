@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -250,6 +250,54 @@ class TargetCapabilities(BaseModel):
     )
 
 
+HarborAgent = Literal[
+    "antigravity-cli", "claude-code", "codex", "copilot-cli", "cursor-cli",
+    "devin", "opencode", "opencode-v2", "pi",
+]
+
+_HARBOR_AGENT_BY_CLI: dict[str, HarborAgent] = {
+    "agy": "antigravity-cli",
+    "antigravity": "antigravity-cli",
+    "claude": "claude-code",
+    "codex": "codex",
+    "copilot": "copilot-cli",
+    "agent": "cursor-cli",
+    "cursor": "cursor-cli",
+    "cursor-agent": "cursor-cli",
+    "devin": "devin",
+    "opencode": "opencode",
+    "opencode2": "opencode-v2",
+    "pi": "pi",
+}
+
+
+class HarborRunnerConfig(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    agent: HarborAgent | None = None
+    effort: str | None = None
+    base_url: str | None = None
+    model_api_key_name: str | None = None
+    skip_model_parsing: bool = False
+    kwargs: dict[str, Any] = Field(default_factory=dict, repr=False)
+
+
+class HarborExecutionConfig(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    env: str = Field(default="docker", min_length=1)
+    n_concurrent: int | None = Field(default=None, ge=1)
+    kwargs: dict[str, Any] = Field(default_factory=dict, repr=False)
+    options: dict[str, Any] = Field(default_factory=dict, repr=False)
+
+
+class ExecutionConfig(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    backend: Literal["host", "harbor"] = "host"
+    harbor: HarborExecutionConfig = Field(default_factory=HarborExecutionConfig)
+
+
 class Target(BaseModel):
     """
     One CLI invoked with one model — the unit every mode benchmarks.
@@ -313,9 +361,20 @@ class Target(BaseModel):
 
     env: dict[str, str] = Field(default_factory=dict, description="Extra env vars for this target")
     enabled: bool = Field(default=True, description="Set false to skip without deleting")
+    harbor: HarborRunnerConfig | None = None
 
     # Optional grouping label (cli-compare's comparison_label). Reporting only.
     comparison_label: str | None = Field(default=None, exclude=True)
+
+    def harbor_agent(self) -> HarborAgent:
+        if self.harbor and self.harbor.agent:
+            return self.harbor.agent
+        cli = Path(self.cli_path).name.removesuffix(".exe")
+        agent = _HARBOR_AGENT_BY_CLI.get(cli)
+        if agent is None:
+            supported = ", ".join(sorted(set(_HARBOR_AGENT_BY_CLI.values())))
+            raise ValueError(f"Runner '{self.name}': Harbor supports {supported}")
+        return agent
 
     @property
     def label(self) -> str:
@@ -560,7 +619,7 @@ class TaskSourceSpec(BaseModel):
     model_config = {"protected_namespaces": ()}
 
     type: str = Field(
-        description="Importer to use: 'terminal-bench' (Terminal-Bench 4.x/Harbor)."
+        description="Task source: 'terminal-bench' (host importer) or 'harbor' (local native tasks)."
     )
     path: str = Field(
         description=(
@@ -694,6 +753,8 @@ class TaskConfig(BaseModel):
 
     # Resolved at load time (not in yaml)
     task_dir: Path | None = Field(default=None, exclude=True)
+    harbor_source: str | None = Field(default=None, exclude=True)
+    harbor_timeout_minutes: int | None = Field(default=None, exclude=True)
 
 
 # ---------------------------------------------------------------------------
@@ -767,6 +828,7 @@ class BenchConfig(BaseModel):
     task_sources: list[TaskSourceSpec] = Field(default_factory=list)
 
     # ---- Execution ----
+    execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     # Concurrency strategy. Controls how many task × target jobs run at once.
     #   "per_target" (default) — each enabled CLI/model gets its own lane of
     #                            `concurrency_per_target` jobs (default 1), so a
@@ -864,6 +926,48 @@ class BenchConfig(BaseModel):
                 raise ValueError("cli-compare does not support spec-driven tasks")
         return self
 
+    @model_validator(mode="after")
+    def _validate_harbor(self) -> "BenchConfig":
+        sources = [s for s in self.task_sources if s.enabled]
+        if self.execution.backend == "host":
+            if any(s.type == "harbor" for s in sources):
+                raise ValueError("type: harbor requires execution.backend: harbor")
+            if any(t.harbor is not None for t in self.enabled_targets()):
+                raise ValueError("Runner harbor settings require execution.backend: harbor")
+            if self.execution.harbor != HarborExecutionConfig():
+                raise ValueError("execution.harbor requires execution.backend: harbor")
+            return self
+        if not self.is_cli_compare:
+            raise ValueError("Harbor execution is supported only in cli-compare")
+        if not sources or any(s.type != "harbor" for s in sources):
+            raise ValueError("Harbor execution requires only type: harbor task sources")
+        for source in sources:
+            if (source.is_git_source or source.ref != "main" or source.depth != 1
+                    or source.subdir is not None or source.token_env is not None):
+                raise ValueError("Harbor task sources require local paths (no git options)")
+            if source.mode != TaskMode.VIBE.value:
+                raise ValueError("Harbor task sources support only mode: vibe")
+        if self.judge_model or self.judge_cli_path:
+            raise ValueError("Harbor runs use task verifiers, not a host judge")
+        for name in ("timeout_minutes", "task_timeout_minutes"):
+            timeout = getattr(self, name)
+            if timeout is not None and timeout <= 0:
+                raise ValueError(f"Harbor {name} must be positive")
+        for target in self.enabled_targets():
+            agent = target.harbor_agent()
+            provider, separator, model = target.model_id.partition("/")
+            if agent in ("opencode", "opencode-v2") and not (provider and separator and model):
+                raise ValueError(f"Runner '{target.name}': Harbor OpenCode needs a provider/model ID")
+            if any((
+                target.cli_base_args, target.cli_model_flag, target.cli_agent_flag,
+                target.cli_effort_flag, target.extra_args, target.spec_mode_args,
+            )):
+                raise ValueError(
+                    f"Runner '{target.name}': Harbor owns the CLI invocation; "
+                    "remove host CLI arguments"
+                )
+        return self
+
     def enabled_targets(self) -> list[Target]:
         return [t for t in self.targets if t.enabled]
 
@@ -894,6 +998,8 @@ class BenchConfig(BaseModel):
 
         if self.max_concurrency and self.max_concurrency > 0:
             workers = min(workers, self.max_concurrency)
+        if self.execution.backend == "harbor" and self.execution.harbor.n_concurrent:
+            workers = min(workers, self.execution.harbor.n_concurrent)
         return max(1, workers)
 
     # Backwards-friendly accessors used in a few report/runner spots.
@@ -1067,12 +1173,26 @@ class RunResult:
     agent_stderr: str = ""
     error_message: str | None = None
     workspace_path: str | None = None
+    execution_details: dict[str, Any] | None = None
+    cost_source: Literal["cli_native", "token_pricing", "unknown"] | None = None
+    cache_write_input_tokens: int | None = None
 
     @property
     def duration_seconds(self) -> float:
         if self.finished_at:
             return (self.finished_at - self.started_at).total_seconds()
         return 0.0
+
+    @property
+    def is_harbor(self) -> bool:
+        return (self.execution_details or {}).get("backend") == "harbor"
+
+    @property
+    def latency_seconds(self) -> float | None:
+        """Headline latency, without provisioning or grading for Harbor attempts."""
+        if self.is_harbor:
+            return (self.execution_details or {}).get("timings_seconds", {}).get("agent")
+        return self.cli_reported_seconds or self.duration_seconds
 
     @property
     def native_credits(self) -> float | None:
@@ -1104,6 +1224,10 @@ class RunResult:
             },
             "usage": {
                 "cost_usd": self.cost_usd,
+                **({
+                    "cost_source": self.cost_source,
+                    "cache_write_input_tokens": self.cache_write_input_tokens,
+                } if self.cost_source is not None else {}),
                 "input_tokens": self.input_tokens,
                 "cached_input_tokens": self.cached_input_tokens,
                 "output_tokens": self.output_tokens,
@@ -1159,6 +1283,7 @@ class RunResult:
             },
             "error_message": self.error_message,
             "workspace_path": self.workspace_path,
+            **({"execution": self.execution_details} if self.execution_details else {}),
         }
 
 
@@ -1207,6 +1332,10 @@ class BenchmarkRun:
         return sum(r.cost_usd for r in self.results if r.cost_usd is not None)
 
     @property
+    def unknown_cost_runs(self) -> int:
+        return sum(r.cost_source == "unknown" for r in self.results)
+
+    @property
     def total_credits(self) -> float:
         return sum(r.total_credits for r in self.results)
 
@@ -1237,21 +1366,27 @@ class BenchmarkRun:
         return out
 
     # ---- cost / efficiency stats (USD + native), keyed by target ----
-    def cost_stats_by_target(self) -> dict[str, dict[str, float]]:
-        out: dict[str, dict[str, float]] = {}
+    def cost_stats_by_target(self) -> dict[str, dict[str, float | None]]:
+        out: dict[str, dict[str, float | None]] = {}
         for target, all_results in self.results_by_target().items():
             results = [r for r in all_results if r.status != TaskStatus.UNAVAILABLE]
             n = len(results)
             passed = [r for r in results if r.status == TaskStatus.PASSED]
-            costed = [r for r in results if r.cost_usd is not None]
+            is_harbor = all_results[0].is_harbor
+            cost_attempts = all_results if is_harbor else results
+            costed = [r for r in cost_attempts if r.cost_usd is not None]
             total_cost = sum(r.cost_usd for r in costed)
             passed_cost = sum(r.cost_usd for r in passed if r.cost_usd is not None)
+            # Harbor measures spend per successful result, including failed
+            # attempts. Missing attempt costs make that metric unknown.
+            cost_per_pass = float("inf")
+            if passed and (not is_harbor or len(costed) == len(cost_attempts)):
+                cost_per_pass = (total_cost if is_harbor else passed_cost) / len(passed)
             avg_cost = total_cost / len(costed) if costed else 0.0
-            latencies = [
-                r.cli_reported_seconds if r.cli_reported_seconds else r.duration_seconds
-                for r in results
-            ]
-            avg_latency = sum(latencies) / n if n else 0.0
+            latencies = [v for r in results if (v := r.latency_seconds) is not None]
+            avg_latency = sum(latencies) / len(latencies) if latencies else None
+            if not is_harbor and avg_latency is None:
+                avg_latency = 0.0
             total_in = sum(r.input_tokens for r in results if r.input_tokens is not None)
             total_out = sum(r.output_tokens for r in results if r.output_tokens is not None)
 
@@ -1274,7 +1409,7 @@ class BenchmarkRun:
                 "pass_rate": len(passed) / n if n else 0.0,
                 "avg_cost_usd": avg_cost,
                 "total_cost_usd": total_cost,
-                "cost_per_pass": (passed_cost / len(passed)) if passed else float("inf"),
+                "cost_per_pass": cost_per_pass,
                 "avg_latency_seconds": avg_latency,
                 "total_input_tokens": float(total_in),
                 "total_output_tokens": float(total_out),

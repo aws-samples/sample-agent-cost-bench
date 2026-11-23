@@ -28,6 +28,11 @@ class JSONReporter:
             }
             for target, s in run.cost_stats_by_target().items()
         }
+        is_harbor = run.config.execution.backend == "harbor"
+        if is_harbor:
+            for stats in cost_stats.values():
+                if not stats["has_cost"]:
+                    stats["avg_cost_usd"] = stats["total_cost_usd"] = None
 
         payload = {
             "run_id": run.run_id,
@@ -42,7 +47,11 @@ class JSONReporter:
                 "failed": run.failed_runs,
                 "unavailable": run.unavailable_runs,
                 "pass_rate": run.pass_rate,
-                "total_cost_usd": run.total_cost_usd,
+                "total_cost_usd": (
+                    None if is_harbor and not any(r.cost_usd is not None for r in run.results)
+                    else run.total_cost_usd
+                ),
+                **({"unknown_cost_runs": run.unknown_cost_runs} if is_harbor else {}),
                 "total_credits": run.total_credits,
                 "avg_score_by_target": run.avg_score_by_target(),
                 "cost_stats_by_target": cost_stats,
@@ -58,7 +67,7 @@ class JSONReporter:
                         "name": t.name,
                         "label": t.label,
                         "model_id": t.model_id,
-                        "cost_source": t.cost_source.value,
+                        "cost_source": "harbor" if is_harbor else t.cost_source.value,
                         "supports_spec": t.capabilities.supports_spec,
                     }
                     for t in run.config.targets
@@ -66,6 +75,9 @@ class JSONReporter:
                 "tasks_dir": run.config.tasks_dir,
                 "parallel_workers": run.config.effective_workers(),
                 "repeats": run.config.repeats,
+                **({"execution": run.config.execution.model_dump(
+                    exclude={"harbor": {"kwargs", "options"}},
+                )} if is_harbor else {}),
             },
             "results": [r.to_dict() for r in run.results],
         }

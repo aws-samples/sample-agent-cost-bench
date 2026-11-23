@@ -19,9 +19,10 @@
     <div class="card"><div class="label">Total Runs</div><div class="value">{{ total_runs }}</div></div>
     <div class="card"><div class="label">Passed</div><div class="value">{{ passed_runs }} <span style="font-size:14px;color:var(--muted)">/ {{ pass_rate }}</span></div></div>
     <div class="card"><div class="label">Failed</div><div class="value">{{ failed_runs }}</div></div>
-    <div class="card"><div class="label">Duration</div><div class="value">{{ duration }}</div></div>
-    <div class="card"><div class="label">Total Cost</div><div class="value cost">${{ total_cost }}</div></div>
+    <div class="card"><div class="label">{{ 'Run Wall Time' if is_harbor else 'Duration' }}</div><div class="value">{{ duration }}</div></div>
+    <div class="card"><div class="label">{{ 'Known Cost' if unknown_cost_runs else 'Total Cost' }}</div><div class="value cost">{% if unknown_cost_runs and not any_cost_recorded %}—{% else %}${{ total_cost }}{% endif %}</div></div>
   </div>
+  {% if unknown_cost_runs %}<p class="hint">Cost telemetry was unavailable for {{ unknown_cost_runs }} attempt(s). Averages include only attempts with known cost.</p>{% endif %}
 
   <h2>Cost Comparison — same model across CLIs</h2>
   <table>
@@ -33,7 +34,7 @@
         <th class="num">Avg Cost / Run (USD)</th>
         <th class="num">Avg Credits / Run</th>
         <th class="num">Cost / Success (USD)</th>
-        <th class="num">Avg Duration</th>
+        <th class="num">{{ 'Avg Agent Time' if is_harbor else 'Avg Duration' }}</th>
         <th class="num">Tokens (in / out)</th>
         <th class="num">Runs</th>
       </tr>
@@ -47,14 +48,15 @@
         <td class="num cost">{% if s.has_cost %}${{ "%.4f"|format(s.avg_cost) }}{% else %}—{% endif %}</td>
         <td class="num">{% if s.has_credits %}{{ "%.3f"|format(s.avg_credits) }}{% else %}—{% endif %}</td>
         <td class="num cost">{% if s.cost_per_pass is not none %}${{ "%.4f"|format(s.cost_per_pass) }}{% else %}n/a{% endif %}</td>
-        <td class="num">{{ "%.1f"|format(s.avg_latency) }}s</td>
+        <td class="num">{% if s.avg_latency is not none %}{{ "%.1f"|format(s.avg_latency) }}s{% else %}—{% endif %}</td>
         <td class="num">{% if s.total_input_tokens or s.total_output_tokens %}{{ s.total_input_tokens }} / {{ s.total_output_tokens }}{% else %}—{% endif %}</td>
         <td class="num">{{ s.passed }}/{{ s.total }}</td>
       </tr>
     {% endfor %}
     </tbody>
   </table>
-  <p class="hint"><b>Cost / Success</b> = total cost ÷ passing runs — the real cost of one working result.</p>
+  <p class="hint"><b>Cost / Success</b> {% if is_harbor %}= cost of all attempts ÷ passing runs; unavailable if any attempt cost is missing.{% else %}= average cost of passing runs.{% endif %}</p>
+  {% if is_harbor %}<p class="hint"><b>Agent Time</b> excludes sandbox startup, agent installation, and verification. Attempts without an agent timing show — and are excluded from time averages. Wall time includes setup and verification.</p>{% endif %}
   <p class="hint"><b>Avg Credits / Run</b> uses each tool's native unit (Kiro credits, Copilot AI credits from <code>totalNanoAiu</code>).
      Claude Code bills in USD directly and reports no credits (—). Compare credits only within a tool, not across.</p>
 
@@ -64,12 +66,12 @@
     <div class="chart-box"><h3>Avg Cost per Run (USD)</h3><canvas id="costChart"></canvas></div>
     <div class="chart-box"><h3>Cost per Success (USD)</h3><canvas id="cppChart"></canvas></div>
     <div class="chart-box"><h3>Pass Rate (%)</h3><canvas id="passChart"></canvas></div>
-    <div class="chart-box"><h3>Avg Duration (s)</h3><canvas id="latChart"></canvas></div>
+    <div class="chart-box"><h3>{{ 'Avg Agent Time' if is_harbor else 'Avg Duration' }} (s)</h3><canvas id="latChart"></canvas></div>
   </div>
   <h3 style="margin:28px 0 14px;">Per-Task Breakdown — each CLI on every task</h3>
   <div class="chart-grid-full">
     <div class="chart-box"><h3>Cost per Run by Task (USD)</h3><div class="tall"><canvas id="costByTaskChart"></canvas></div></div>
-    <div class="chart-box"><h3>Duration by Task (s)</h3><div class="tall"><canvas id="latByTaskChart"></canvas></div></div>
+    <div class="chart-box"><h3>{{ 'Agent Time' if is_harbor else 'Duration' }} by Task (s)</h3><div class="tall"><canvas id="latByTaskChart"></canvas></div></div>
   </div>
   {% endif %}
 
@@ -121,7 +123,7 @@
           {% if c %}
           <a class="cell" href="#{{ c.anchor }}" title="{{ c.title }}">
             <span class="badge {{ c.status_class }}"><span class="sym">{{ c.symbol }}</span> {{ c.label }}</span>
-            <span class="meta">{% if c.cost_usd is not none %}<span class="cost">${{ "%.2f"|format(c.cost_usd) }}</span> · {% endif %}{{ "%.0f"|format(c.cli_time) }}s</span>
+            <span class="meta">{% if c.cost_usd is not none %}<span class="cost">${{ "%.2f"|format(c.cost_usd) }}</span> · {% endif %}{% if c.cli_time is not none %}{{ "%.0f"|format(c.cli_time) }}s{% else %}—{% endif %}</span>
           </a>
           {% else %}<span class="na">not run</span>{% endif %}
         </td>
@@ -145,7 +147,7 @@
     <thead><tr>
       <th>Task</th><th>CLI</th>{% if repeats > 1 %}<th class="num">#</th>{% endif %}
       <th>Status</th><th class="num">Functional</th><th class="num">Cost</th>
-      <th class="num">Credits</th><th class="num">Tokens</th><th class="num">Duration</th>
+      <th class="num">Credits</th><th class="num">Tokens</th><th class="num">{{ 'Agent Time' if is_harbor else 'Duration' }}</th>{% if is_harbor %}<th class="num">Wall Time</th>{% endif %}
     </tr></thead>
     <tbody>
     {% for r in result_rows %}
@@ -158,9 +160,10 @@
         <td class="num cost">{% if r.cost_usd is not none %}${{ "%.4f"|format(r.cost_usd) }}{% else %}—{% endif %}</td>
         <td class="num">{% if r.credits is not none %}{{ "%.3f"|format(r.credits) }}{% else %}—{% endif %}</td>
         <td class="num">{% if r.input_tokens is not none %}{{ r.input_tokens }}/{{ r.output_tokens }}{% else %}—{% endif %}</td>
-        <td class="num">{{ "%.1f"|format(r.cli_time) }}s</td>
+        <td class="num">{% if r.cli_time is not none %}{{ "%.1f"|format(r.cli_time) }}s{% else %}—{% endif %}</td>
+        {% if is_harbor %}<td class="num">{{ "%.1f"|format(r.wall_time) }}s</td>{% endif %}
       </tr>
-      <tr class="detail-row"><td colspan="{{ 9 if repeats > 1 else 8 }}" style="padding:0 0 6px;">
+      <tr class="detail-row"><td colspan="{{ 9 + (1 if repeats > 1 else 0) + (1 if is_harbor else 0) }}" style="padding:0 0 6px;">
         <details>
           <summary><b>{{ r.target }}</b> · {{ r.functional_summary or "details" }}{% if r.error_message %} — {{ r.error_message }}{% endif %}</summary>
           <pre>

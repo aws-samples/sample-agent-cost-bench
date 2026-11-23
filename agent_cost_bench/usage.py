@@ -411,7 +411,10 @@ def _sum_copilot_inline_aiu(objs: list[dict]) -> float | None:
     return total_nano / 1_000_000_000  # nano-AIU -> AIU (credits)
 
 
-def parse_copilot_usage(stdout: str, stderr: str, pricing: Pricing, home: Path | None = None) -> Usage:
+def parse_copilot_usage(
+    stdout: str, stderr: str, pricing: Pricing, home: Path | None = None, *,
+    read_session_state: bool = True,
+) -> Usage:
     """
     Parse ``copilot --output-format json`` (JSONL) and derive cost from the real
     AI-credit (AIU) telemetry, in priority order:
@@ -455,7 +458,7 @@ def parse_copilot_usage(stdout: str, stderr: str, pricing: Pricing, home: Path |
         cost = inline_aiu * 0.01  # 1 AIU = $0.01
 
     # 2. Otherwise, the session-state AIU record (older CLIs), located by sessionId.
-    if cost is None:
+    if cost is None and read_session_state:
         session_id = _extract_copilot_session_id(stdout)
         if session_id:
             real_cost = read_copilot_session_aiu(session_id, home=home)
@@ -1035,6 +1038,11 @@ def parse_devin_usage(pricing: Pricing, workspace: Path | None) -> Usage:
         raw = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return Usage()
+    return parse_devin_export_usage(raw, pricing)
+
+
+def parse_devin_export_usage(raw: str, pricing: Pricing) -> Usage:
+    """Parse ATIF metrics from an export or Harbor's reconstructed trajectory."""
     try:
         export = json.loads(raw)
     except json.JSONDecodeError:

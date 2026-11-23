@@ -106,7 +106,7 @@ class HTMLReporter:
             for task_id in task_labels:
                 runs = [r for r in run.results if r.task_id == task_id and r.target == target]
                 cost_avg = _avg([r.cost_usd for r in runs])
-                lat_avg = _avg([(r.cli_reported_seconds or r.duration_seconds) for r in runs])
+                lat_avg = _avg([r.latency_seconds for r in runs])
                 cost_series.append(round(cost_avg, 5) if cost_avg is not None else None)
                 lat_series.append(round(lat_avg, 1) if lat_avg is not None else None)
             per_task_cost.append({"label": target, "data": cost_series})
@@ -118,12 +118,15 @@ class HTMLReporter:
             "comparison_label": run.config.comparison_label or "(per-target models)",
             "started_at": run.started_at.strftime("%Y-%m-%d %H:%M:%S UTC"),
             "duration": f"{run.duration_seconds:.1f}s",
+            "is_harbor": any(r.is_harbor for r in run.results),
             "total_runs": run.total_runs,
             "passed_runs": run.passed_runs,
             "failed_runs": run.failed_runs,
             "unavailable_runs": run.unavailable_runs,
             "pass_rate": f"{run.pass_rate:.0%}",
             "total_cost": f"{run.total_cost_usd:.4f}",
+            "unknown_cost_runs": run.unknown_cost_runs,
+            "any_cost_recorded": any(r.cost_usd is not None for r in run.results),
             "targets": [t.label for t in run.config.targets],
             "target_stats": target_stats,
             "has_cost": has_cost,
@@ -133,12 +136,17 @@ class HTMLReporter:
             "task_matrix": task_matrix,
             "matrix_targets": column_order,
             "chart_labels": json.dumps(labels),
-            "chart_avg_cost": json.dumps([round(s["avg_cost"], 5) for s in cost_rows]),
+            "chart_avg_cost": json.dumps([
+                round(s["avg_cost"], 5) if s["has_cost"] else None for s in cost_rows
+            ]),
             "chart_cost_per_pass": json.dumps(
                 [round(s["cost_per_pass"], 5) if s["cost_per_pass"] is not None else None for s in cost_rows]
             ),
             "chart_pass_rate": json.dumps([round(s["pass_rate"] * 100, 1) for s in cost_rows]),
-            "chart_latency": json.dumps([round(s["avg_latency"], 1) for s in cost_rows]),
+            "chart_latency": json.dumps([
+                round(s["avg_latency"], 1) if s["avg_latency"] is not None else None
+                for s in cost_rows
+            ]),
             "chart_task_labels": json.dumps(task_labels),
             "chart_task_cost": json.dumps(per_task_cost),
             "chart_task_latency": json.dumps(per_task_latency),
@@ -217,6 +225,7 @@ class HTMLReporter:
                         passed_by.append(target)
                 first = runs[0]
                 costs = [r["cost_usd"] for r in runs if r["cost_usd"] is not None]
+                latencies = [r["cli_time"] for r in runs if r["cli_time"] is not None]
                 tot = totals[target]
                 tot["scored"] += len(scored)
                 tot["passed"] += n_pass
@@ -238,7 +247,7 @@ class HTMLReporter:
                     "label": label,
                     "checks": first["checks"] if len(runs) == 1 else "",
                     "cost_usd": sum(costs) / len(costs) if costs else None,
-                    "cli_time": sum(r["cli_time"] for r in runs) / len(runs),
+                    "cli_time": sum(latencies) / len(latencies) if latencies else None,
                     "anchor": first["anchor"],
                     "title": f"{target}: {status}"
                              + (f", {first['checks']} checks" if len(runs) == 1 and first["checks"]
@@ -298,7 +307,8 @@ class HTMLReporter:
                 "credits": r.native_credits,
                 "input_tokens": r.input_tokens,
                 "output_tokens": r.output_tokens,
-                "cli_time": r.cli_reported_seconds or r.duration_seconds,
+                "cli_time": r.latency_seconds,
+                "wall_time": r.duration_seconds,
                 "repeat": r.repeat,
                 "error_message": r.error_message or "",
                 "functional_summary": r.functional_result.summary if r.functional_result else "",

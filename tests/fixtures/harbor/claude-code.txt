@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","model":"claude-sonnet-4-6"}
+{"type":"result","subtype":"success","duration_ms":1200,"total_cost_usd":0.012,"usage":{"input_tokens":10,"cache_read_input_tokens":100,"cache_creation_input_tokens":5,"output_tokens":20}}
