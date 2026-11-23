@@ -94,9 +94,13 @@ runners:
     display_name: "GitHub Copilot (claude-opus-4.8)"
     cli_path: copilot
     model_id: claude-opus-4.8
+    # --disable-builtin-mcps: keep Copilot's built-in GitHub MCP server out of
+    # the context so every CLI is measured without MCP. --no-auto-update: keep
+    # the installed CLI version for the whole run.
     cli_base_args: ["-p", "{prompt}", "--model", "{model}",
                     "--allow-all-tools", "--output-format", "json",
-                    "--effort", "{effort}"]
+                    "--effort", "{effort}",
+                    "--disable-builtin-mcps", "--no-auto-update"]
 
   # ── Cursor (claude-opus-4.8-thinking-max) ─────────────────────────────────
   # Cursor encodes effort/thinking as part of the model slug, not a separate

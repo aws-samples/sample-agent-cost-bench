@@ -703,10 +703,11 @@ generate_config() {
       # repo (pricing, capabilities, and the exact arg shapes each CLI expects).
       case "$cost" in
         credit)
-          # Kiro: effort passed as a flag; model_id is a plain slug.
+          # Kiro: effort passed as a flag; model_id is a plain slug. Current
+          # kiro-cli only emits credit telemetry with --output-format stream-json.
           echo "    pricing:"
           echo "      usd_per_credit: 0.04"
-          echo "    cli_base_args: [chat, --no-interactive, --trust-all-tools, \"--model={model}\", \"--effort={effort}\"]"
+          echo "    cli_base_args: [chat, --no-interactive, --trust-all-tools, --output-format, stream-json, \"--model={model}\", \"--effort={effort}\"]"
           ;;
         claude_json)
           # Claude Code: cost read from --output-format json (total_cost_usd).
@@ -714,7 +715,9 @@ generate_config() {
           ;;
         copilot_json)
           # Copilot: cost from AIU telemetry in the JSON; no pricing block needed.
-          echo "    cli_base_args: [\"-p\", \"{prompt}\", \"--model\", \"{model}\", \"--allow-all-tools\", \"--output-format\", \"json\", \"--effort\", \"{effort}\"]"
+          # --disable-builtin-mcps keeps the built-in GitHub MCP server out of the
+          # context (no-MCP comparison); --no-auto-update pins the CLI version.
+          echo "    cli_base_args: [\"-p\", \"{prompt}\", \"--model\", \"{model}\", \"--allow-all-tools\", \"--output-format\", \"json\", \"--effort\", \"{effort}\", \"--disable-builtin-mcps\", \"--no-auto-update\"]"
           ;;
         codex_json)
           # OpenAI Codex: `codex exec --json ... -m {model} {prompt}`.
