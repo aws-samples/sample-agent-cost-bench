@@ -934,6 +934,11 @@ class SpecArtifactScores:
         return sum(scores) / len(scores)
 
 
+# Return codes of a CLI ended by SIGTERM (15) or SIGKILL (9): negative when the
+# process was killed outright, 128+N when it trapped the signal and exited.
+_SIGNAL_EXIT_CODES = frozenset({-15, -9, 143, 137})
+
+
 @dataclass
 class PhaseResult:
     """Result of a single execution phase (vibe, or a spec phase)."""
@@ -996,6 +1001,19 @@ class PhaseResult:
 
         if self.success:
             return False
+
+        # The CLI was terminated by a signal rather than finishing its turn:
+        # SIGTERM/SIGKILL either reported as a negative return code (killed
+        # before it could exit) or as 128+N (the CLI trapped the signal and
+        # exited itself). Harness timeouts never reach this point — they raise
+        # CLITimeoutError instead — so these are external kills: another
+        # process (e.g. a concurrent agent's `pkill -f`), the OOM killer, or the
+        # host. Not a model failure, so retry instead of scoring it.
+        if self.error:
+            m = _re.search(r"exited with code (-?\d+)", self.error)
+            if m and int(m.group(1)) in _SIGNAL_EXIT_CODES:
+                return True
+
         signatures = (
             # Kiro CLI V3 stream-json: {"type":"runError",...,"message":"<model>
             # stopped responding and timed out ...","retryErrorType":"TRANSIENT"}
@@ -1015,6 +1033,10 @@ class PhaseResult:
             "error sending request for url",
             "internal server error",
             "tool approval required but --no-interactive",
+            # Kiro CLI V3 installs its engine on first use; several Kiro runs
+            # starting at once can race it and fail before the model is called:
+            # "failed to spawn the v3 engine: node binary ...".
+            "failed to spawn the v3 engine",
         )
         return any(s in combined for s in signatures)
 

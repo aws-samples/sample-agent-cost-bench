@@ -222,3 +222,52 @@ def test_clean_successful_run_is_not_transient():
         stdout='{"type":"turn.completed","usage":{"input_tokens":10}}',
     )
     assert p.transient_error is False
+
+
+# ---------------------------------------------------------------------------
+# A CLI ended by a signal (external kill) is not a model failure
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("code", [143, 137, -15, -9])
+def test_signal_terminated_cli_is_transient(code):
+    """A concurrent agent's `pkill -f <pattern>` can match another CLI whose
+    prompt (passed on argv) contains the same text, or the OOM killer can stop
+    it. The run never finished its turn; scoring the empty workspace would
+    record a model failure that the model didn't make."""
+    p = PhaseResult(
+        phase="vibe",
+        success=False,
+        duration_seconds=30.8,
+        stdout='{"type":"assistant.message","content":"Starting the server"}',
+        error=f"CLI exited with code {code}",
+    )
+    assert p.transient_error is True
+
+
+@pytest.mark.parametrize("code", [1, 2, 127])
+def test_ordinary_nonzero_exit_is_not_transient(code):
+    p = PhaseResult(
+        phase="vibe",
+        success=False,
+        duration_seconds=5.0,
+        stderr="error: something the model did went wrong",
+        error=f"CLI exited with code {code}",
+    )
+    assert p.transient_error is False
+
+
+def test_kiro_v3_engine_spawn_failure_is_transient():
+    """First use of kiro-cli V3 installs its engine; parallel Kiro runs can race
+    it and fail in ~1 s before any model call."""
+    msg = "failed to spawn the v3 engine: node binary `/home/u/.local/share/kiro-cli/node`"
+    p = PhaseResult(
+        phase="vibe",
+        success=False,
+        duration_seconds=1.0,
+        stdout='{"type":"runError","data":{"sessionId":null,"stage":"launch",'
+               f'"message":"{msg}"}}}}',
+        stderr=f"error: {msg}",
+        error="CLI exited with code 1",
+    )
+    assert p.transient_error is True
