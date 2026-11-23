@@ -589,7 +589,7 @@ AGENT_COST_BENCH_RESULT: {"score": 0.7, "checkpoints": {...}, "summary": "..."}
 
 ### Pass threshold
 
-`functional_pass_threshold` in `task.yaml` sets the score needed for a PASS (default: 0.99). Lower it for rubric tasks that rarely need perfection.
+`functional_pass_threshold` sets the score needed for a PASS (default: 0.99). Set it in a task's `task.yaml` for that task, or in the run config to change the default for every task that doesn't set its own; a value in `task.yaml` always wins. Lower it for rubric tasks that rarely need perfection.
 
 ## Bring your own tasks (Terminal-Bench 4.x)
 

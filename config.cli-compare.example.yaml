@@ -434,6 +434,8 @@ judge_weight: 0.6
 concurrency: per_target
 timeout_minutes: 20
 repeats: 1
+# Default PASS threshold for tasks whose task.yaml doesn't set its own
+# functional_pass_threshold (a task.yaml value always wins).
 functional_pass_threshold: 0.99
 # Container runtime for Docker-verified tasks defaults to `docker`. Set the
 # CONTAINER_RUNTIME=finch env var to use Finch instead. When using Finch on

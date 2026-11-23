@@ -363,6 +363,13 @@ def _scan_task_root(root: Path, config: BenchConfig) -> list[TaskConfig]:
         if config.modes and tc.mode not in config.modes:
             continue
 
+        # A threshold set in task.yaml wins. Otherwise the run-level
+        # `functional_pass_threshold` from the config applies: without this the
+        # config key was silently ignored and every such task fell back to
+        # TaskConfig's own 0.99 default.
+        if "functional_pass_threshold" not in tc.model_fields_set:
+            tc.functional_pass_threshold = config.functional_pass_threshold
+
         found.append(tc)
     return found
 

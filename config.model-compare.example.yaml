@@ -91,6 +91,8 @@ timeout_minutes: 30
 repeats: 1
 transient_retries: 2
 pass_threshold: 0.5            # used only for tasks with no functional test
+# Default PASS threshold for tasks whose task.yaml doesn't set its own
+# functional_pass_threshold (a task.yaml value always wins).
 functional_pass_threshold: 0.99
 workspace_base: /tmp/agent-cost-bench-model-compare
 
