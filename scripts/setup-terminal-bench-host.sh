@@ -96,7 +96,10 @@ fetch_verified() {
 preflight() {
   [[ "$EUID" -ne 0 ]] || die "run as the benchmark user (with sudo rights), not as root"
   have sudo || die "sudo is required"
-  sudo -v || die "sudo authentication failed"
+  # Passwordless sudo first: `sudo -v` asks for a password whenever any sudoers
+  # rule needs one (e.g. %sudo on stock Ubuntu AMIs, even with NOPASSWD for the
+  # user), which fails in non-interactive runs such as cloud-init or SSM.
+  sudo -n true 2>/dev/null || sudo -v || die "sudo authentication failed"
 
   . /etc/os-release
   [[ "${ID:-}" == "ubuntu" ]] || die "this script targets Ubuntu 24.04 (found ${PRETTY_NAME:-unknown})"
