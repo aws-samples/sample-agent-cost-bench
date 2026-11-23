@@ -229,12 +229,11 @@ runners:
   - name: copilot
     display_name: "GitHub Copilot (claude-opus-4.8)"
     cli_path: copilot
-    model_id: claude-opus-4.8
-    pricing:
-      usd_per_premium_request: 0.04
+    model_id: claude-opus-4.8         # no pricing block: cost = AI credits × $0.01
     cli_base_args: ["-p", "{prompt}", "--model", "{model}",
                     "--allow-all-tools", "--output-format", "json",
-                    "--effort", "{effort}"]
+                    "--effort", "{effort}",
+                    "--disable-builtin-mcps", "--no-auto-update"]
 
   - name: cursor
     display_name: "Cursor (claude-opus-4.8)"
