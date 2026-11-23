@@ -1,0 +1,114 @@
+# Copy this file to examples/harbor/config.harbor-ec2.yaml and replace the placeholders.
+# Run from the repo root. Comments map to outputs from examples/harbor/ec2-infra.cfn.yaml.
+execution:
+  backend: harbor
+  harbor:
+    env: ec2
+    n_concurrent: 1
+    kwargs:
+      launch_mode: ephemeral
+      region: us-west-2                         # Region
+      ami_id: ami-REPLACE_ME                    # WorkerAmiId
+      instance_type: m7i-flex.large             # Choose an x86-64 type available in the worker subnet's AZ
+      subnet_id: subnet-REPLACE_ME              # WorkerSubnetId
+      security_group_ids: [sg-REPLACE_ME]       # WorkerSecurityGroupId
+      use_public_ip: true                       # Public pilot subnet; use false with private routing
+      key_name: REPLACE_ME                      # WorkerKeyName
+      ssh_key_path: ~/.ssh/REPLACE_ME.pem        # Local key file; for a generated key, see the setup guide
+      ssh_user: ubuntu
+      aws_profile: REPLACE_ME                   # Local AWS launcher profile (not exported AWS_PROFILE)
+      iam_instance_profile: arn:aws:iam::REPLACE_ME:instance-profile/REPLACE_ME  # WorkerInstanceProfileArn
+      root_volume_size_gb: 24
+      tags:
+        Project: harbor-bedrock-smoke
+
+task_sources:
+  - type: harbor
+    path: examples/harbor/hello-file
+
+runners:
+  - name: claude-code-bedrock
+    cli_path: claude
+    model_id: bedrock/us.anthropic.claude-opus-5-5  # Choose a model or profile available in AWS_REGION
+    # US Geo on-demand USD/token; assumes 5-minute cache writes.
+    # https://aws.amazon.com/bedrock/pricing/ (Anthropic)
+    pricing:
+      usd_per_input_token: 0.00000440
+      usd_per_cached_input_token: 0.00000022
+      usd_per_cache_write_token: 0.00000550
+      usd_per_output_token: 0.00002200
+    env:
+      CLAUDE_CODE_USE_BEDROCK: '1'
+      AWS_REGION: us-west-2   # Region
+      # Pin auxiliary calls to the same profile for a single-model smoke test.
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: us.anthropic.claude-opus-5-5
+      ANTHROPIC_DEFAULT_SONNET_MODEL: us.anthropic.claude-opus-5-5
+      ANTHROPIC_DEFAULT_OPUS_MODEL: us.anthropic.claude-opus-5-5
+
+  # These runners also use the instance role, not exported controller credentials.
+  - name: codex-bedrock
+    cli_path: codex
+    model_id: us.openai.gpt-6-sol
+    # US Geo on-demand USD/token, up to 272K input tokens.
+    # The 30-minute write rate applies to explicit caching on Responses only.
+    # https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-6-sol.html#pricing
+    pricing: &gpt6_us_pricing
+      usd_per_input_token: 0.00000220
+      usd_per_cached_input_token: 0.00000022
+      usd_per_cache_write_token: 0.00000275
+      usd_per_output_token: 0.00001100
+    harbor:
+      skip_model_parsing: true
+      kwargs:
+        config:
+          model_provider: amazon-bedrock-runtime
+          web_search: disabled
+          model_providers:
+            amazon-bedrock-runtime:
+              aws:
+                region: us-west-2
+    env:
+      OPENAI_API_KEY: ''
+      OPENAI_BASE_URL: ''
+
+  - name: opencode-bedrock
+    cli_path: opencode
+    model_id: ec2-bedrock/us.openai.gpt-6-sol
+    pricing: *gpt6_us_pricing
+    harbor:
+      agent: opencode-v2
+      skip_model_parsing: true
+      kwargs:
+        opencode_config:
+          providers:
+            ec2-bedrock:
+              package: '@opencode/ai/providers/amazon-bedrock'
+              settings:
+                region: us-west-2
+                baseURL: https://bedrock-runtime.us-west-2.amazonaws.com
+                profile: default  # On a fresh worker, the SDK falls back to IMDS.
+              models:
+                us.openai.gpt-6-sol:
+                  name: GPT-6 Sol (US Geo)
+                  capabilities:
+                    tools: true
+    env:
+      OPENAI_API_KEY: ''
+
+  - name: pi-bedrock
+    cli_path: pi
+    model_id: amazon-bedrock/us.openai.gpt-6-sol
+    pricing: *gpt6_us_pricing
+    harbor:
+      skip_model_parsing: true
+      kwargs:
+        version: '1.6.0'  # Includes the GPT-6 Sol US Geo profile.
+    env:
+      AWS_REGION: us-west-2
+      AWS_PROFILE: default  # Activates Pi's provider; credentials come from IMDS.
+      OPENAI_API_KEY: ''
+    # Keep OPENAI_BASE_URL and OPENAI_API_BASE unset in the controller shell.
+
+repeats: 1
+output_dir: results/harbor-ec2-bedrock
+open_report: false

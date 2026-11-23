@@ -82,14 +82,22 @@ class BenchmarkRunner:
         self.config = config
         self.run_id = _utcnow().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
         self._logger = RunLogger(Path(config.output_dir), self.run_id)
+        self._harbor_version: str | None = None
 
     async def run(self) -> BenchmarkRun:
-        tasks = discover_tasks(self.config)
         targets = self.config.enabled_targets()
         repeats = self.config.repeats
 
         try:
+            tasks = discover_tasks(self.config)
             self._preflight()
+            if self._harbor_version is not None:
+                from .executor.harbor import preflight_agents, validate_task
+
+                for task in tasks:
+                    validate_task(task)
+                if tasks:
+                    preflight_agents(self.config, tasks[0])
         except Exception:
             self._logger.close()
             try:
@@ -98,14 +106,15 @@ class BenchmarkRunner:
                 pass
             raise
 
-        self._cleanup_old_workspaces()
-        # Drop tasks we cannot grade under the host-agent model (their tests need
-        # a runtime nothing provides — the agent was expected to install it
-        # in-container). Detection is static (reads test files + the env
-        # Dockerfile), so it runs BEFORE image pulling — we never pull an image
-        # for a task we're going to skip. Skipping keeps the pass rate honest:
-        # these are a harness limitation, not a model failure.
-        tasks = self._filter_unsupported_runtime_tasks(tasks)
+        if self._harbor_version is None:
+            self._cleanup_old_workspaces()
+            # Drop tasks we cannot grade under the host-agent model (their tests need
+            # a runtime nothing provides — the agent was expected to install it
+            # in-container). Detection is static (reads test files + the env
+            # Dockerfile), so it runs BEFORE image pulling — we never pull an image
+            # for a task we're going to skip. Skipping keeps the pass rate honest:
+            # these are a harness limitation, not a model failure.
+            tasks = self._filter_unsupported_runtime_tasks(tasks)
         if not tasks:
             console.print(
                 "[yellow]No runnable tasks remain after skipping runtime-incompatible "
@@ -114,8 +123,9 @@ class BenchmarkRunner:
             self._logger.close()
             return BenchmarkRun(run_id=self.run_id, config=self.config)
 
-        self._docker_preflight(tasks)
-        self._repo_preflight(tasks)
+        if self._harbor_version is None:
+            self._docker_preflight(tasks)
+            self._repo_preflight(tasks)
         self._prevent_idle_sleep()
 
         bench_run = BenchmarkRun(run_id=self.run_id, config=self.config)
@@ -186,7 +196,12 @@ class BenchmarkRunner:
             rep = f" #{result.repeat}" if repeats > 1 else ""
             cost = f"  ${result.cost_usd:.4f}" if result.cost_usd is not None else ""
             cred = f"  {result.total_credits:.3f}cr" if result.total_credits else ""
-            t = f"  {result.cli_reported_seconds or result.duration_seconds:.0f}s"
+            secs = result.latency_seconds
+            if result.is_harbor:
+                agent_time = f"{secs:.0f}s" if secs is not None else "—"
+                t = f"  agent {agent_time} · wall {result.duration_seconds:.0f}s"
+            else:
+                t = f"  {secs:.0f}s"
             console.print(
                 f"  [{done[0]:>{len(str(total))}}/{total}]  {icon} {result.status.value:<7}  "
                 f"{result.task_id} / {result.target}{rep}{cost}{cred}{t}  ({elapsed:.0f}s elapsed)"
@@ -235,9 +250,10 @@ class BenchmarkRunner:
             checkpoint_path.unlink(missing_ok=True)
 
         bench_run.finished_at = _utcnow()
+        cost_note = self._cost_total_label(bench_run)
         await self._logger.log_event(
             f"run finished — {bench_run.passed_runs}/{bench_run.total_runs} passed "
-            f"({bench_run.pass_rate:.0%})  total_cost=${bench_run.total_cost_usd:.4f}  "
+            f"({bench_run.pass_rate:.0%})  {cost_note}  "
             f"total_credits={bench_run.total_credits:.3f}"
         )
         self._logger.close()
@@ -250,6 +266,11 @@ class BenchmarkRunner:
     # ------------------------------------------------------------------
 
     def _preflight(self) -> None:
+        if self.config.execution.backend == "harbor":
+            from .executor.harbor import preflight
+
+            self._harbor_version = preflight(self.config.execution.harbor)
+            return
         missing = check_targets_available(self.config)
         if missing:
             console.print(
@@ -514,6 +535,24 @@ class BenchmarkRunner:
         await self._logger.log_event(
             f"START  {task.id}  target={target.label}  repeat={repeat}  mode={task.mode.value}"
         )
+
+        if self._harbor_version is not None:
+            from .executor.harbor import run_trial
+
+            try:
+                await run_trial(
+                    self.config, task, target, result,
+                    Path(self.config.output_dir).expanduser().resolve() / f"{self.run_id}.harbor",
+                    self._harbor_version,
+                )
+            finally:
+                result.finished_at = _utcnow()
+            await self._logger.log_event(
+                f"END    {task.id}  target={target.label}  status={result.status.value}"
+                f"  reward={result.functional_score:.2f}  cost_source={result.cost_source}"
+                f"  trial={(result.execution_details or {}).get('trial_dir', 'not created')}"
+            )
+            return result
 
         workspace = Workspace(run_id, task, self.config, target=target)
         try:
@@ -791,6 +830,15 @@ class BenchmarkRunner:
     # Summary
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _cost_total_label(run: BenchmarkRun) -> str:
+        total = f"${run.total_cost_usd:.4f}"
+        if run.unknown_cost_runs:
+            if not any(r.cost_usd is not None for r in run.results):
+                total = "—"
+            return f"Known cost: {total} ({run.unknown_cost_runs} attempt(s) without cost)"
+        return f"Total cost: {total}"
+
     def _print_summary(self, run: BenchmarkRun) -> None:
         console.print()
         unit = "CLI" if self.config.is_cli_compare else "Model"
@@ -803,7 +851,10 @@ class BenchmarkRunner:
             table.add_column("Final", justify="right")
         table.add_column("Cost (USD)", justify="right", style="magenta")
         table.add_column("Credits", justify="right")
-        table.add_column("Time", justify="right", style="dim")
+        is_harbor = self.config.execution.backend == "harbor"
+        table.add_column("Agent Time" if is_harbor else "Time", justify="right", style="dim")
+        if is_harbor:
+            table.add_column("Wall Time", justify="right", style="dim")
 
         for r in run.results:
             status_disp = {
@@ -816,21 +867,24 @@ class BenchmarkRunner:
             }.get(r.status, r.status.value)
             cost = f"${r.cost_usd:.4f}" if r.cost_usd is not None else "—"
             cred = f"{r.native_credits:.3f}" if r.native_credits is not None else "—"
-            secs = r.cli_reported_seconds or r.duration_seconds
+            secs = r.latency_seconds
             row = [r.task_id, r.target, status_disp, f"{r.functional_score:.0%}"]
             if not self.config.is_cli_compare:
                 row.append(f"{r.final_score:.0%}")
-            row += [cost, cred, f"{secs:.1f}s" if secs else "—"]
+            row += [cost, cred, f"{secs:.1f}s" if secs is not None and (secs or is_harbor) else "—"]
+            if is_harbor:
+                row.append(f"{r.duration_seconds:.1f}s")
             table.add_row(*row)
         console.print(table)
 
         self._print_cost_summary(run)
+        total_time_label = "Run wall time" if is_harbor else "Total time"
         console.print(
             f"\n[bold]Pass rate:[/bold] {run.pass_rate:.0%}  "
             f"({run.passed_runs}/{run.total_runs})  "
-            f"[dim]Total cost: ${run.total_cost_usd:.4f} · "
+            f"[dim]{self._cost_total_label(run)} · "
             f"Total credits: {run.total_credits:.3f} · "
-            f"Total time: {run.duration_seconds:.1f}s[/dim]\n"
+            f"{total_time_label}: {run.duration_seconds:.1f}s[/dim]\n"
         )
 
     def _print_cost_summary(self, run: BenchmarkRun) -> None:
@@ -848,7 +902,8 @@ class BenchmarkRunner:
         table.add_column("Avg Cost/Run", justify="right", style="magenta")
         table.add_column("Cost/Success", justify="right", style="bold magenta")
         table.add_column("Avg Credits/Run", justify="right")
-        table.add_column("Avg Latency", justify="right", style="dim")
+        latency_label = "Avg Agent Time" if self.config.execution.backend == "harbor" else "Avg Latency"
+        table.add_column(latency_label, justify="right", style="dim")
         table.add_column("Runs", justify="right", style="dim")
 
         def _key(kv):
@@ -857,16 +912,19 @@ class BenchmarkRunner:
 
         for target, s in sorted(stats.items(), key=_key):
             cpp = s["cost_per_pass"]
-            cpp_str = "n/a (0 pass)" if cpp == float("inf") else f"${cpp:.4f}"
+            cpp_str = f"${cpp:.4f}"
+            if cpp == float("inf"):
+                cpp_str = "—" if s["passed"] else "n/a (0 pass)"
             avg = f"${s['avg_cost_usd']:.4f}" if s["has_cost"] else "—"
             cred = f"{s['avg_credits']:.3f}" if s["has_credits"] else "—"
+            latency = s["avg_latency_seconds"]
             table.add_row(
                 target,
                 f"{s['pass_rate']:.0%}",
                 avg,
                 cpp_str,
                 cred,
-                f"{s['avg_latency_seconds']:.1f}s",
+                f"{latency:.1f}s" if latency is not None else "—",
                 f"{int(s['passed'])}/{int(s['runs'])}",
             )
         console.print(table)

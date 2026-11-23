@@ -37,6 +37,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+harbor = ["harbor[ec2]==0.27.0; python_version >= '3.12'"]
 dev = [
     "pytest>=7.4",
     "pytest-asyncio>=0.21",

@@ -1,0 +1,123 @@
+# Requires Python 3.12+ and `python -m pip install -e '.[harbor]'`.
+# Run from the repo root. See examples/harbor/README.md for sandbox setup.
+# Live runs require the selected runners' credentials; validate/list-tasks do not.
+# Export a scoped temporary AWS role session in the standard AWS_* variables.
+# Leave AWS_PROFILE, AWS_BEARER_TOKEN_BEDROCK, OPENAI_BASE_URL and OPENAI_API_BASE unset.
+execution:
+  backend: harbor
+  harbor:
+    env: docker
+    n_concurrent: 1
+    # kwargs: {}     # Provider-specific Harbor options (see `harbor environment schema <env>`).
+    # options: {}    # Common Harbor SDK environment settings, e.g. override_cpus: 2.
+
+task_sources:
+  - type: harbor
+    path: examples/harbor/hello-file
+
+runners:
+  - name: claude-code
+    cli_path: claude
+    model_id: bedrock/us.anthropic.claude-opus-5-5
+    # US Geo on-demand USD/token; assumes 5-minute cache writes.
+    # https://aws.amazon.com/bedrock/pricing/ (Anthropic)
+    pricing:
+      usd_per_input_token: 0.00000440
+      usd_per_cached_input_token: 0.00000022
+      usd_per_cache_write_token: 0.00000550
+      usd_per_output_token: 0.00002200
+    env:
+      <<: &aws_session
+        AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID}"
+        AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY}"
+        AWS_SESSION_TOKEN: "${AWS_SESSION_TOKEN}"
+      CLAUDE_CODE_USE_BEDROCK: '1'
+      AWS_REGION: us-west-2
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: us.anthropic.claude-opus-5-5
+      ANTHROPIC_DEFAULT_SONNET_MODEL: us.anthropic.claude-opus-5-5
+      ANTHROPIC_DEFAULT_OPUS_MODEL: us.anthropic.claude-opus-5-5
+  - name: opencode
+    cli_path: opencode
+    model_id: docker-bedrock/us.openai.gpt-6-sol
+    # US Geo on-demand USD/token, up to 272K input tokens.
+    # The 30-minute write rate applies to explicit caching on Responses only.
+    # https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-6-sol.html#pricing
+    pricing: &gpt6_us_pricing
+      usd_per_input_token: 0.00000220
+      usd_per_cached_input_token: 0.00000022
+      usd_per_cache_write_token: 0.00000275
+      usd_per_output_token: 0.00001100
+    harbor:
+      agent: opencode-v2
+      skip_model_parsing: true
+      kwargs:
+        opencode_config:
+          providers:
+            docker-bedrock:
+              package: '@opencode/ai/providers/amazon-bedrock'
+              settings:
+                region: us-west-2
+                baseURL: https://bedrock-runtime.us-west-2.amazonaws.com
+              models:
+                us.openai.gpt-6-sol:
+                  name: GPT-6 Sol (US Geo)
+                  capabilities:
+                    tools: true
+    env:
+      <<: *aws_session
+      OPENAI_API_KEY: ''  # Prevent Harbor's generic fallback to an unrelated key.
+  - name: codex
+    cli_path: codex
+    model_id: us.openai.gpt-6-sol
+    pricing: *gpt6_us_pricing
+    harbor:
+      skip_model_parsing: true  # Let Codex's native provider handle the Bedrock ID.
+      kwargs:
+        config:
+          model_provider: amazon-bedrock-runtime
+          web_search: disabled  # Runtime does not support hosted web search.
+          model_providers:
+            amazon-bedrock-runtime:
+              aws:
+                region: us-west-2
+    env:
+      <<: *aws_session
+      # Don't let Harbor pick up an ambient OpenAI credential or endpoint override.
+      OPENAI_API_KEY: ''
+      OPENAI_BASE_URL: ''
+  - name: copilot
+    cli_path: copilot
+    model_id: claude-opus-4.8
+    env:
+      COPILOT_GITHUB_TOKEN: "${COPILOT_GITHUB_TOKEN}"
+  - name: cursor
+    cli_path: cursor-agent
+    model_id: claude-opus-4-8
+    env:
+      CURSOR_API_KEY: "${CURSOR_API_KEY}"
+  - name: antigravity
+    cli_path: agy
+    model_id: gemini-3.8-flash
+    env:
+      GEMINI_API_KEY: "${GEMINI_API_KEY}"
+  - name: devin
+    cli_path: devin
+    model_id: claude-opus-4-8
+    env:
+      DEVIN_API_KEY: "${DEVIN_API_KEY}"
+  - name: pi
+    cli_path: pi
+    model_id: amazon-bedrock/us.openai.gpt-6-sol
+    pricing: *gpt6_us_pricing
+    harbor:
+      skip_model_parsing: true
+      kwargs:
+        version: '1.6.0'  # Includes the GPT-6 Sol US Geo profile.
+    env:
+      <<: *aws_session
+      AWS_REGION: us-west-2
+      OPENAI_API_KEY: ''
+
+repeats: 1
+output_dir: results/harbor
+open_report: false

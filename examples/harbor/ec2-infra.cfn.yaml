@@ -1,0 +1,166 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Quick-start networking and IAM infrastructure for trying out the Harbor EC2 backend. Creates a
+  new VPC.
+
+Parameters:
+  AvailabilityZone:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Description: Availability Zone for the worker subnet in this Region.
+  VpcCidr:
+    Type: String
+    Default: 10.72.0.0/24
+    Description: IPv4 CIDR address range for the VPC to be created.
+    AllowedPattern: '^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])/(?:1[6-9]|2[0-8])$'
+    ConstraintDescription: Enter an IPv4 CIDR with prefix length 16 to 28.
+  WorkerSubnetCidr:
+    Type: String
+    Default: 10.72.0.0/26
+    Description: IPv4 CIDR address range for the worker subnet. Must fit within VpcCidr.
+    AllowedPattern: '^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])/(?:1[6-9]|2[0-8])$'
+    ConstraintDescription: Enter an IPv4 CIDR with prefix length 16 to 28.
+  ControllerSshCidr:
+    Type: String
+    Description: >-
+      IPv4 CIDR allowed to SSH to workers: The controller/orchestrator, which may be your laptop.
+      Prefer a specific public IP with /32. 0.0.0.0/0 explicitly exposes SSH to the internet.
+    AllowedPattern: '^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])/(?:[0-9]|[12][0-9]|3[0-2])$'
+    ConstraintDescription: Enter an IPv4 CIDR with prefix length 0 to 32.
+  WorkerKeyPair:
+    Type: String
+    Default: ''
+    MaxLength: 255
+    Description: Existing regional EC2 key pair name, or leave blank to generate one.
+  WorkerAmiParameter:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
+    Description: >-
+      SSM parameter for a trusted, patched Ubuntu AMI with key-only SSH. Should be consistent with
+      your target agent environment instance type's architecture (AMD vs x86 vs ARM)
+
+Conditions:
+  GenerateWorkerKeyPair: !Equals [!Ref WorkerKeyPair, '']
+
+Resources:
+  GeneratedWorkerKeyPair:
+    Type: AWS::EC2::KeyPair
+    Condition: GenerateWorkerKeyPair
+    Properties:
+      KeyName: !Sub '${AWS::StackName}-worker'
+      KeyType: ed25519
+      KeyFormat: pem
+  WorkerVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+  WorkerSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Ref AvailabilityZone
+      CidrBlock: !Ref WorkerSubnetCidr
+      MapPublicIpOnLaunch: false
+      VpcId: !Ref WorkerVpc
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref WorkerVpc
+  WorkerRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref WorkerVpc
+  WorkerInternetRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+      RouteTableId: !Ref WorkerRouteTable
+  WorkerRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref WorkerRouteTable
+      SubnetId: !Ref WorkerSubnet
+  WorkerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Harbor pilot worker - controller SSH and web egress only
+      VpcId: !Ref WorkerVpc
+      SecurityGroupIngress:
+        - Description: SSH from the configured controller CIDR
+          IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref ControllerSshCidr
+      SecurityGroupEgress:
+        - Description: Ubuntu signed package repositories for host and task bootstrap
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - Description: Package and image registries, agent installer, and regional Bedrock runtime
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+  WorkerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub ec2.${AWS::URLSuffix}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeBedrockModels
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: InvokeModelsAndInferenceProfiles
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  # Cross-Region profiles also authorize against their backing models.
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/*'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*'
+              - Sid: CreateResponsesInDefaultProject
+                Effect: Allow
+                Action: bedrock:InvokeModel
+                Resource: !Sub 'arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:project/default'
+  WorkerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref WorkerRole
+
+Outputs:
+  Region:
+    Value: !Ref AWS::Region
+  WorkerAmiId:
+    Description: Resolved regional AMI ID to copy to Harbor's ami_id setting.
+    Value: !Ref WorkerAmiParameter
+  WorkerSubnetId:
+    Value: !Ref WorkerSubnet
+  WorkerSecurityGroupId:
+    Value: !GetAtt WorkerSecurityGroup.GroupId
+  WorkerKeyName:
+    Value: !If [GenerateWorkerKeyPair, !Ref GeneratedWorkerKeyPair, !Ref WorkerKeyPair]
+  WorkerPrivateKeyParameterName:
+    Condition: GenerateWorkerKeyPair
+    Description: >-
+      SSM SecureString parameter name for the generated SSH key. This is not the private key
+      itself.
+    Value: !Sub '/ec2/keypair/${GeneratedWorkerKeyPair.KeyPairId}'
+  WorkerInstanceProfileArn:
+    Value: !GetAtt WorkerInstanceProfile.Arn
+  WorkerRoleArn:
+    Description: Scope the controller's separate iam:PassRole permission to this role.
+    Value: !GetAtt WorkerRole.Arn

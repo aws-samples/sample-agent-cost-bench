@@ -101,23 +101,37 @@ def _do_validate(cfg) -> None:
         console.print(f"  Comparison: {cfg.comparison_label}")
     unit = "Runners" if cfg.is_cli_compare else "Models"
     console.print(f"  {unit}:")
+    is_harbor = cfg.execution.backend == "harbor"
     for t in cfg.targets:
         state = "" if t.enabled else " [dim](disabled)[/dim]"
+        if is_harbor:
+            agent = t.harbor_agent() if t.enabled else t.cli_path
+            console.print(f"    - {t.label}{state}: Harbor {agent} (model={t.model_id})")
+            continue
         console.print(
             f"    - {t.label}{state}: {t.cli_path} "
             f"(model={t.model_id}, cost={t.cost_source.value}, spec={t.capabilities.supports_spec})"
         )
-    missing = check_targets_available(cfg)
-    if missing:
-        console.print(f"  [yellow]⚠ CLI binaries not found:[/yellow] {', '.join(missing)}")
-    else:
-        console.print("  [green]✓[/green] all target binaries resolved on PATH")
+    if not is_harbor:
+        missing = check_targets_available(cfg)
+        if missing:
+            console.print(f"  [yellow]⚠ CLI binaries not found:[/yellow] {', '.join(missing)}")
+        else:
+            console.print("  [green]✓[/green] all target binaries resolved on PATH")
 
     try:
         tasks = discover_tasks(cfg)
         console.print(f"[green]✓[/green] {len(tasks)} task(s) discovered")
+        if is_harbor:
+            from .executor.harbor import validate_environment, validate_task
+
+            sandbox = cfg.execution.harbor
+            installed = validate_environment(sandbox)
+            console.print(f"  Harbor {installed} · {sandbox.env} runtime is checked at run time")
         for t in tasks:
-            issues = _validate_task(t, cfg)
+            if is_harbor:
+                validate_task(t)
+            issues = [] if is_harbor else _validate_task(t, cfg)
             if issues:
                 for issue in issues:
                     console.print(f"  [yellow]⚠[/yellow] {t.id}: {issue}")
@@ -127,7 +141,8 @@ def _do_validate(cfg) -> None:
         console.print(f"[red]✗ {e}[/red]")
         sys.exit(1)
 
-    _validate_docker(tasks)
+    if not is_harbor:
+        _validate_docker(tasks)
     console.print("\n[bold green]Validation passed.[/bold green]")
 
 
@@ -147,7 +162,8 @@ def _do_list_tasks(cfg) -> None:
             t.id,
             t.mode.value,
             t.description[:60] + ("…" if len(t.description) > 60 else ""),
-            f"{t.timeout_minutes}m",
+            (f"{t.harbor_timeout_minutes}m" if t.harbor_timeout_minutes else "task.toml")
+            if t.harbor_source else f"{t.timeout_minutes}m",
         )
     console.print(table)
     console.print(f"\n[dim]Total: {len(tasks)} task(s)[/dim]")
@@ -189,7 +205,12 @@ def cli_compare_run(config, task, runner, output_dir, no_open, repeats, timeout)
     if repeats is not None:
         cfg.repeats = repeats
     if timeout is not None:
-        cfg.timeout_minutes = timeout
+        if cfg.execution.backend == "harbor":
+            if timeout <= 0:
+                raise click.BadParameter("must be positive", param_hint="--timeout")
+            cfg.task_timeout_minutes = timeout
+        else:
+            cfg.timeout_minutes = timeout
     _do_run(cfg, no_open)
 
 
@@ -339,8 +360,11 @@ def report(results_json, output_dir, no_open):
             tr.task_completion_rate = scores.get("task_completion", 0.0)
             tr.final_score = scores.get("final", 0.0)
             tr.cost_usd = usage.get("cost_usd")
+            tr.cost_source = usage.get("cost_source")
+            tr.execution_details = r.get("execution")
             tr.input_tokens = usage.get("input_tokens")
             tr.cached_input_tokens = usage.get("cached_input_tokens")
+            tr.cache_write_input_tokens = usage.get("cache_write_input_tokens")
             tr.output_tokens = usage.get("output_tokens")
             tr.reasoning_output_tokens = usage.get("reasoning_output_tokens")
             tr.cli_reported_seconds = usage.get("cli_reported_seconds", 0.0) or 0.0

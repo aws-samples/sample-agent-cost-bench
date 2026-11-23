@@ -22,6 +22,10 @@ from .models import BenchConfig, CompareMode, CostSource
 
 def check_targets_available(config: BenchConfig) -> list[str]:
     """Return target binaries that could NOT be resolved (empty = all good)."""
+    if config.execution.backend == "harbor":
+        # Harbor installs the agent in the task image, not on this host.
+        # BenchConfig._validate_harbor() checks runners are supported via Target.harbor_agent().
+        return []
     missing: list[str] = []
     seen: set[str] = set()
     for t in config.enabled_targets():

@@ -46,6 +46,15 @@ pip install -e .            # installs the `agent-cost-bench` command
 pip install -e ".[dev]"     # optional: dev/test extras
 ```
 
+## Run native Harbor tasks (experimental)
+
+Use the optional Harbor backend to run local, single-step Harbor tasks in `cli-compare`.
+Harbor sets up the sandbox, installs the agent, and runs the task's verifier. Host execution
+(including the Terminal-Bench importer) remains the default.
+
+See the [Harbor guide](examples/harbor/README.md) for Python 3.12+ setup, supported agents,
+and examples for local Docker or AWS EC2 (no local Docker required).
+
 ## Interactive runner (`run.sh`)
 
 If you'd rather not clone, install, and hand-write a config yourself, the repo ships a self-contained interactive runner that walks you through the whole thing. It's the fastest way to go from zero to a rendered cost comparison, and it runs **entirely on your machine**
